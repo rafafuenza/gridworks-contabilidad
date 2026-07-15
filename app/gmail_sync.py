@@ -9,6 +9,8 @@ import smtplib
 import time
 from email.header import decode_header
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from email.utils import make_msgid, formatdate
 
 from sqlalchemy.orm import Session
@@ -250,19 +252,28 @@ def _uid_de_message_id(imap: imaplib.IMAP4_SSL, message_id: str):
     return None
 
 
-def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str) -> str:
+def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str, adjunto=None) -> str:
     """Envia un correo por SMTP (Gmail) y le aplica una etiqueta de Gmail a la copia
-    guardada (en Enviados). Devuelve el Message-ID usado."""
+    guardada (en Enviados). Devuelve el Message-ID usado.
+
+    adjunto: opcional, tupla (filename, bytes, subtipo_mime)."""
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         raise RuntimeError("Faltan GMAIL_ADDRESS / GMAIL_APP_PASSWORD en las variables de entorno.")
 
-    msg = MIMEText(cuerpo, "plain", "utf-8")
+    msg = MIMEMultipart()
     msg["Subject"] = asunto
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = to
     msg["Date"] = formatdate(localtime=True)
     mid = make_msgid()
     msg["Message-ID"] = mid
+    msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
+
+    if adjunto:
+        filename, data, subtipo = adjunto
+        part = MIMEApplication(data, _subtype=subtipo)
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
 
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
         s.starttls()

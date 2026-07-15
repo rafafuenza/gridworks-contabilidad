@@ -193,10 +193,10 @@ def _run_aceptar_bg(mes: str):
         if stats.get("no_encontrados"):
             _accept_state["mensaje"] += f" {stats['no_encontrados']} sin correo encontrado en Gmail."
 
-        # Aviso por correo a contabilidad (con la etiqueta de contabilidad)
+        # Aviso por correo a contabilidad (con el Excel adjunto y la etiqueta)
         if stats["movidos"] > 0:
             try:
-                _enviar_aviso_declaradas(mes, stats["movidos"], resumen)
+                _enviar_aviso_declaradas(db, mes, stats["movidos"], resumen)
                 _accept_state["mensaje"] += f" Aviso enviado a {NOTIFY_EMAIL}."
             except Exception as e:
                 _accept_state["mensaje"] += f" (No se pudo enviar el aviso: {e})"
@@ -208,7 +208,18 @@ def _run_aceptar_bg(mes: str):
         _accept_state["terminado"] = True
 
 
-def _enviar_aviso_declaradas(mes, cantidad, resumen):
+def _libro_excel(db: Session, mes: str):
+    """Genera el Libro de Compras .xlsx para un mes (mismo contenido que /export.xlsx)."""
+    query = db.query(Purchase)
+    if mes:
+        query = query.filter(Purchase.periodo == mes)
+    purchases = query.order_by(Purchase.fecha.asc().nullslast()).all()
+    content = build_workbook(purchases, mes or "todos los periodos")
+    filename = f"Libro Compras {mes or 'todos'}.xlsx"
+    return filename, content
+
+
+def _enviar_aviso_declaradas(db, mes, cantidad, resumen):
     periodo = mes or "todos los periodos"
     lineas = []
     for numero, proveedor, total, moneda in resumen:
@@ -217,9 +228,11 @@ def _enviar_aviso_declaradas(mes, cantidad, resumen):
     asunto = f"Compras declaradas: {cantidad} facturas ({periodo})"
     cuerpo = (
         f"Se aceptaron y movieron a 'Compras Declaradas' {cantidad} facturas "
-        f"({periodo}):\n\n" + "\n".join(lineas) + "\n"
+        f"({periodo}). Se adjunta el Libro de Compras en Excel.\n\n" + "\n".join(lineas) + "\n"
     )
-    gmail_sync.enviar_correo_con_etiqueta(NOTIFY_EMAIL, asunto, cuerpo, GMAIL_LABEL)
+    filename, content = _libro_excel(db, mes)
+    adjunto = (filename, content, "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    gmail_sync.enviar_correo_con_etiqueta(NOTIFY_EMAIL, asunto, cuerpo, GMAIL_LABEL, adjunto=adjunto)
 
 
 @app.post("/aceptar-mes")
@@ -247,14 +260,7 @@ def aceptar_mes_estado(request: Request):
 @app.get("/export.xlsx")
 def export_excel(request: Request, mes: str = "", db: Session = Depends(get_db)):
     require_login(request)
-    query = db.query(Purchase)
-    if mes:
-        query = query.filter(Purchase.periodo == mes)
-    purchases = query.order_by(Purchase.fecha.asc().nullslast()).all()
-
-    label = mes or "todos los periodos"
-    content = build_workbook(purchases, label)
-    filename = f"Libro Compras {mes or 'todos'}.xlsx"
+    filename, content = _libro_excel(db, mes)
     return StreamingResponse(
         io.BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
