@@ -14,9 +14,12 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 # Label de entrada: documentos a procesar. Al aceptarlos manualmente en la web
 # se mueven al label de declaradas (se quita el de entrada y se agrega este).
-GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "gridworks-contabilidad")
+# OJO: para agregar/quitar labels (X-GM-LABELS) Gmail exige el nombre EXACTO del
+# label (con mayusculas, '/' de anidado y espacios), no la forma normalizada de
+# busqueda. Estos son los labels reales de la cuenta.
+GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "Gridworks/Contabilidad")
 GMAIL_DECLARED_LABEL = os.environ.get(
-    "GMAIL_DECLARED_LABEL", "gridworks-contabilidad-sii-compras-declaradas"
+    "GMAIL_DECLARED_LABEL", "Gridworks/Contabilidad/SII/Compras Declaradas"
 )
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")

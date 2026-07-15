@@ -155,35 +155,69 @@ def aceptar_uno(request: Request, purchase_id: int, mes: str = Form(""), db: Ses
     return RedirectResponse(f"/?mes={mes}&flash={flash}", status_code=303)
 
 
+# --- Aceptacion por lote en segundo plano con progreso ---
+_accept_state = {"running": False, "terminado": False, "total": 0, "procesados": 0,
+                 "movidos": 0, "no_encontrados": 0, "mensaje": ""}
+_accept_lock = threading.Lock()
+
+
+def _pendientes_aceptables(db, mes):
+    q = db.query(Purchase).filter(Purchase.estado != "aceptada", Purchase.revision_manual == False)  # noqa: E712
+    if mes:
+        q = q.filter(Purchase.periodo == mes)
+    return q
+
+
+def _run_aceptar_bg(mes: str):
+    db = SessionLocal()
+    try:
+        pend = _pendientes_aceptables(db, mes).all()
+        by_mid = {}
+        ids = []
+        for p in pend:
+            if p.gmail_message_id:
+                by_mid.setdefault(p.gmail_message_id, []).append(p.id)
+                ids.append(p.gmail_message_id)
+
+        def on_result(mid, ok):
+            for pid in by_mid.get(mid, []):
+                fila = db.query(Purchase).get(pid)
+                if fila:
+                    fila.estado = "aceptada"
+            db.commit()
+
+        stats = gmail_sync.mover_a_declaradas(ids, progress=_accept_state, on_result=on_result)
+        _accept_state["mensaje"] = f"{stats['movidos']} facturas aceptadas y movidas a declaradas."
+        if stats.get("no_encontrados"):
+            _accept_state["mensaje"] += f" {stats['no_encontrados']} sin correo encontrado en Gmail."
+    except Exception as e:
+        _accept_state["mensaje"] = f"Error al aceptar el lote: {e}"
+    finally:
+        db.close()
+        _accept_state["running"] = False
+        _accept_state["terminado"] = True
+
+
 @app.post("/aceptar-mes")
 def aceptar_mes(request: Request, mes: str = Form(""), db: Session = Depends(get_db)):
     require_login(request)
-    query = db.query(Purchase).filter(Purchase.estado != "aceptada", Purchase.revision_manual == False)  # noqa: E712
-    if mes:
-        query = query.filter(Purchase.periodo == mes)
-    pendientes = query.all()
+    with _accept_lock:
+        if _accept_state["running"]:
+            return JSONResponse({"running": True, "ya_en_curso": True})
+        n = _pendientes_aceptables(db, mes).count()
+        if n == 0:
+            return JSONResponse({"running": False, "vacio": True,
+                                 "mensaje": "No hay pendientes aceptables en el periodo."})
+        _accept_state.update({"running": True, "terminado": False, "total": n, "procesados": 0,
+                              "movidos": 0, "no_encontrados": 0, "mensaje": "Conectando a Gmail..."})
+    threading.Thread(target=_run_aceptar_bg, args=(mes,), daemon=True).start()
+    return JSONResponse({"running": True})
 
-    total_pend = db.query(Purchase).filter(Purchase.estado != "aceptada")
-    if mes:
-        total_pend = total_pend.filter(Purchase.periodo == mes)
-    omitidas_revision = total_pend.count() - len(pendientes)
 
-    if not pendientes:
-        return RedirectResponse(f"/?mes={mes}&flash=No hay pendientes aceptables en el periodo", status_code=303)
-    try:
-        ids = [p.gmail_message_id for p in pendientes if p.gmail_message_id]
-        res = gmail_sync.mover_a_declaradas(ids) if ids else {"movidos": 0, "no_encontrados": 0}
-        for p in pendientes:
-            p.estado = "aceptada"
-        db.commit()
-        flash = f"{len(pendientes)} facturas aceptadas y movidas a declaradas."
-        if omitidas_revision:
-            flash += f" Se omitieron {omitidas_revision} en revision manual (aceptar una a una)."
-        if res.get("no_encontrados"):
-            flash += f" ({res['no_encontrados']} sin correo encontrado en Gmail.)"
-    except Exception as e:
-        flash = f"Error al aceptar el lote: {e}"
-    return RedirectResponse(f"/?mes={mes}&flash={flash}", status_code=303)
+@app.get("/aceptar-mes/estado")
+def aceptar_mes_estado(request: Request):
+    require_login(request)
+    return JSONResponse(_accept_state)
 
 
 @app.get("/export.xlsx")

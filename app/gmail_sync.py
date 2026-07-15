@@ -195,9 +195,13 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     return text
 
 
-def mover_a_declaradas(message_ids) -> dict:
+def mover_a_declaradas(message_ids, progress: dict = None, on_result=None) -> dict:
     """Mueve uno o varios correos (por Message-ID) del label de entrada al de
-    declaradas: quita GMAIL_LABEL y agrega GMAIL_DECLARED_LABEL. Devuelve stats."""
+    declaradas: quita GMAIL_LABEL y agrega GMAIL_DECLARED_LABEL. Devuelve stats.
+
+    progress: dict opcional que se va actualizando (total/procesados/movidos/...).
+    on_result: callback opcional on_result(message_id, ok) tras cada correo, para
+    que el llamador marque el estado en la base a medida que avanza."""
     if isinstance(message_ids, str):
         message_ids = [message_ids]
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
@@ -209,14 +213,27 @@ def mover_a_declaradas(message_ids) -> dict:
     try:
         all_mail = _find_all_mail_folder(imap)
         imap.select(f'"{all_mail}"')
+        if progress is not None:
+            progress["total"] = len(message_ids)
         for mid in message_ids:
             uid = _uid_de_message_id(imap, mid)
-            if not uid:
+            ok = False
+            if uid:
+                imap.uid("store", uid, "+X-GM-LABELS", f'("{GMAIL_DECLARED_LABEL}")')
+                imap.uid("store", uid, "-X-GM-LABELS", f'("{GMAIL_LABEL}")')
+                stats["movidos"] += 1
+                ok = True
+            else:
                 stats["no_encontrados"] += 1
-                continue
-            imap.uid("store", uid, "+X-GM-LABELS", f'("{GMAIL_DECLARED_LABEL}")')
-            imap.uid("store", uid, "-X-GM-LABELS", f'("{GMAIL_LABEL}")')
-            stats["movidos"] += 1
+            if on_result:
+                try:
+                    on_result(mid, ok)
+                except Exception:
+                    logger.exception("on_result fallo para %s", mid)
+            if progress is not None:
+                progress["procesados"] = stats["movidos"] + stats["no_encontrados"]
+                progress["movidos"] = stats["movidos"]
+                progress["no_encontrados"] = stats["no_encontrados"]
     finally:
         imap.logout()
     return stats

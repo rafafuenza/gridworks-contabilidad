@@ -16,6 +16,17 @@
   <div id="sync-detail" class="text-xs text-blue-800 mt-2"></div>
 </div>
 
+<div id="accept-panel" class="hidden mb-4 p-4 rounded bg-green-50 border border-green-200">
+  <div class="flex justify-between text-sm text-green-900 mb-2">
+    <span id="accept-label">Aceptando…</span>
+    <span id="accept-count" class="font-mono"></span>
+  </div>
+  <div class="w-full bg-green-100 rounded h-3 overflow-hidden">
+    <div id="accept-bar" class="bg-green-600 h-3 transition-all duration-300" style="width:0%"></div>
+  </div>
+  <div id="accept-detail" class="text-xs text-green-800 mt-2"></div>
+</div>
+
 <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
   <form method="get" action="/" class="flex items-end gap-2">
     <div>
@@ -31,11 +42,8 @@
 
   <div class="flex gap-2">
     <button id="btn-sync" type="button" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
-    <form method="post" action="/aceptar-mes"
-          onsubmit="return confirm('Aceptar todas las pendientes del periodo seleccionado y moverlas a declaradas en Gmail?');">
-      <input type="hidden" name="mes" value="{{ mes_seleccionado or '' }}">
-      <button type="submit" class="bg-blue-700 text-white rounded px-4 py-2 text-sm">Aceptar {{ mes_seleccionado or 'todo' }}</button>
-    </form>
+    <button id="btn-aceptar" type="button" data-mes="{{ mes_seleccionado or '' }}"
+            class="bg-blue-700 text-white rounded px-4 py-2 text-sm">Aceptar {{ mes_seleccionado or 'todo' }}</button>
     <a href="/export.xlsx?mes={{ mes_seleccionado or '' }}"
        class="bg-green-700 text-white rounded px-4 py-2 text-sm">Descargar Excel</a>
     <a href="/export/pdfs.zip?mes={{ mes_seleccionado or '' }}"
@@ -127,71 +135,95 @@
 
 <script>
 (function () {
-  const panel = document.getElementById('sync-panel');
-  const bar = document.getElementById('sync-bar');
-  const label = document.getElementById('sync-label');
-  const count = document.getElementById('sync-count');
-  const detail = document.getElementById('sync-detail');
-  const btn = document.getElementById('btn-sync');
-  let timer = null;
-
   function mesActual() { return new URLSearchParams(location.search).get('mes') || ''; }
+  const el = id => document.getElementById(id);
 
-  function render(s) {
-    panel.classList.remove('hidden');
-    if (s.total > 0) {
-      const pct = Math.min(100, Math.round(s.procesados / s.total * 100));
-      bar.style.width = pct + '%';
-      bar.classList.remove('animate-pulse');
-      count.textContent = s.procesados + ' / ' + s.total + '  (' + pct + '%)';
-      label.textContent = s.terminado ? 'Sincronización completa' : 'Revisando correos…';
-    } else {
-      bar.style.width = '100%';
-      bar.classList.add('animate-pulse');
-      count.textContent = '';
-      label.textContent = s.mensaje || 'Conectando a Gmail…';
-    }
-    const partes = [];
-    if (s.nuevos) partes.push(s.nuevos + ' nuevas');
-    if (s.omitidos) partes.push(s.omitidos + ' ya en base');
-    if (s.falta_proveedor) partes.push(s.falta_proveedor + ' sin proveedor');
-    if (s.errores) partes.push(s.errores + ' errores');
-    detail.textContent = s.terminado ? (s.mensaje || '') : partes.join(' · ');
+  // Fabrica de barras de progreso reutilizable (sync y aceptar comparten logica)
+  function progresoLive(cfg) {
+    const panel = el(cfg.panel), bar = el(cfg.bar), label = el(cfg.label),
+          count = el(cfg.count), detail = el(cfg.detail);
+    let timer = null;
 
-    if (s.terminado) {
-      bar.style.width = '100%';
-      bar.classList.remove('animate-pulse');
-      label.textContent = 'Listo';
-      stop();
-      setTimeout(function () { location.href = '/?mes=' + encodeURIComponent(mesActual()); }, 1500);
+    function render(s) {
+      panel.classList.remove('hidden');
+      if (s.total > 0) {
+        const pct = Math.min(100, Math.round(s.procesados / s.total * 100));
+        bar.style.width = pct + '%';
+        bar.classList.remove('animate-pulse');
+        count.textContent = s.procesados + ' / ' + s.total + '  (' + pct + '%)';
+        label.textContent = s.terminado ? cfg.tituloFin : cfg.tituloActivo;
+      } else {
+        bar.style.width = '100%';
+        bar.classList.add('animate-pulse');
+        count.textContent = '';
+        label.textContent = s.mensaje || 'Conectando a Gmail…';
+      }
+      const partes = [];
+      (cfg.detalle || []).forEach(function (d) { if (s[d[0]]) partes.push(s[d[0]] + ' ' + d[1]); });
+      detail.textContent = s.terminado ? (s.mensaje || '') : partes.join(' · ');
+
+      if (s.terminado) {
+        bar.style.width = '100%';
+        bar.classList.remove('animate-pulse');
+        label.textContent = 'Listo';
+        stop();
+        setTimeout(function () { location.href = '/?mes=' + encodeURIComponent(mesActual()); }, 1500);
+      }
     }
+    function poll() {
+      fetch(cfg.estadoUrl).then(r => r.json()).then(function (s) {
+        if (s.running || s.terminado) render(s);
+      }).catch(function () {});
+    }
+    function start() { if (timer) return; poll(); timer = setInterval(poll, 1200); }
+    function stop() { if (timer) { clearInterval(timer); timer = null; } }
+    return { start: start, poll: poll };
   }
 
-  function poll() {
-    fetch('/sync/estado').then(r => r.json()).then(function (s) {
-      if (s.running || s.terminado) render(s);
-    }).catch(function () {});
-  }
-  function start() { if (timer) return; poll(); timer = setInterval(poll, 1200); }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } }
-
-  if (btn) {
-    btn.addEventListener('click', function () {
-      btn.disabled = true;
-      btn.textContent = 'Sincronizando…';
-      fetch('/sync', { method: 'POST' })
-        .then(r => r.json())
-        .then(function () { start(); })
-        .catch(function () { btn.disabled = false; btn.textContent = 'Actualizar ahora'; });
+  // --- Sincronizar ---
+  const sync = progresoLive({
+    panel: 'sync-panel', bar: 'sync-bar', label: 'sync-label', count: 'sync-count', detail: 'sync-detail',
+    estadoUrl: '/sync/estado', tituloActivo: 'Revisando correos…', tituloFin: 'Sincronización completa',
+    detalle: [['nuevos', 'nuevas'], ['omitidos', 'ya en base'], ['falta_proveedor', 'sin proveedor'], ['errores', 'errores']]
+  });
+  const btnSync = el('btn-sync');
+  if (btnSync) {
+    btnSync.addEventListener('click', function () {
+      btnSync.disabled = true; btnSync.textContent = 'Sincronizando…';
+      fetch('/sync', { method: 'POST' }).then(r => r.json()).then(function () { sync.start(); })
+        .catch(function () { btnSync.disabled = false; btnSync.textContent = 'Actualizar ahora'; });
     });
   }
 
-  // Si al abrir la pagina ya hay un sync en curso (ej. cerraste y volviste), retoma la barra
+  // --- Aceptar lote ---
+  const accept = progresoLive({
+    panel: 'accept-panel', bar: 'accept-bar', label: 'accept-label', count: 'accept-count', detail: 'accept-detail',
+    estadoUrl: '/aceptar-mes/estado', tituloActivo: 'Aceptando y moviendo en Gmail…', tituloFin: 'Aceptación completa',
+    detalle: [['movidos', 'movidas'], ['no_encontrados', 'sin correo']]
+  });
+  const btnAceptar = el('btn-aceptar');
+  if (btnAceptar) {
+    btnAceptar.addEventListener('click', function () {
+      if (!confirm('Aceptar todas las pendientes del periodo y moverlas a declaradas en Gmail?')) return;
+      const mes = btnAceptar.getAttribute('data-mes') || '';
+      btnAceptar.disabled = true; btnAceptar.textContent = 'Aceptando…';
+      fetch('/aceptar-mes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'mes=' + encodeURIComponent(mes)
+      }).then(r => r.json()).then(function (s) {
+        if (s.vacio) { alert(s.mensaje || 'No hay pendientes.'); btnAceptar.disabled = false; btnAceptar.textContent = 'Aceptar'; return; }
+        accept.start();
+      }).catch(function () { btnAceptar.disabled = false; btnAceptar.textContent = 'Aceptar'; });
+    });
+  }
+
+  // Si al abrir la pagina ya hay un proceso en curso, retomar la barra correspondiente
   fetch('/sync/estado').then(r => r.json()).then(function (s) {
-    if (s.running) {
-      if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
-      start();
-    }
+    if (s.running) { if (btnSync) { btnSync.disabled = true; btnSync.textContent = 'Sincronizando…'; } sync.start(); }
+  }).catch(function () {});
+  fetch('/aceptar-mes/estado').then(r => r.json()).then(function (s) {
+    if (s.running) { if (btnAceptar) { btnAceptar.disabled = true; btnAceptar.textContent = 'Aceptando…'; } accept.start(); }
   }).catch(function () {});
 })();
 </script>
