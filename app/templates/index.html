@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if flash %}
+<div class="mb-4 p-3 rounded bg-blue-50 border border-blue-200 text-blue-800 text-sm">{{ flash }}</div>
+{% endif %}
+
+<div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+  <form method="get" action="/" class="flex items-end gap-2">
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">Mes</label>
+      <select name="mes" onchange="this.form.submit()" class="border rounded px-3 py-2">
+        <option value="">Todos</option>
+        {% for periodo in periodos %}
+          <option value="{{ periodo }}" {% if periodo == mes_seleccionado %}selected{% endif %}>{{ periodo }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </form>
+
+  <div class="flex gap-2">
+    <form method="post" action="/sync">
+      <button type="submit" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
+    </form>
+    <a href="/export.xlsx?mes={{ mes_seleccionado or '' }}"
+       class="bg-green-700 text-white rounded px-4 py-2 text-sm">Descargar Excel</a>
+    <a href="/export/pdfs.zip?mes={{ mes_seleccionado or '' }}"
+       class="bg-gray-200 text-gray-800 rounded px-4 py-2 text-sm">Descargar PDFs</a>
+  </div>
+</div>
+
+<div class="grid grid-cols-4 gap-4 mb-6">
+  <div class="bg-white rounded-lg shadow p-4">
+    <p class="text-xs text-gray-500">Documentos</p>
+    <p class="text-2xl font-semibold">{{ totales.count }}</p>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <p class="text-xs text-gray-500">Afecto</p>
+    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.afecto) }}</p>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <p class="text-xs text-gray-500">IVA</p>
+    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.iva) }}</p>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <p class="text-xs text-gray-500">Total</p>
+    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.total) }}</p>
+  </div>
+</div>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-gray-100 text-left text-xs text-gray-500 uppercase">
+      <tr>
+        <th class="px-3 py-2">Numero</th>
+        <th class="px-3 py-2">Fecha</th>
+        <th class="px-3 py-2">RUT</th>
+        <th class="px-3 py-2">Descripcion</th>
+        <th class="px-3 py-2">Moneda</th>
+        <th class="px-3 py-2 text-right">Afecto</th>
+        <th class="px-3 py-2 text-right">IVA</th>
+        <th class="px-3 py-2 text-right">Total</th>
+        <th class="px-3 py-2">PDF</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in purchases %}
+      <tr class="border-t {% if p.revision_manual %}bg-yellow-50{% endif %}">
+        <td class="px-3 py-2">{{ p.numero or "-" }}</td>
+        <td class="px-3 py-2">{{ p.fecha.strftime("%d-%m-%Y") if p.fecha else "-" }}</td>
+        <td class="px-3 py-2">{{ p.rut_proveedor or "-" }}</td>
+        <td class="px-3 py-2">
+          {{ p.proveedor or "-" }}
+          {% if p.revision_manual %}
+            <span class="ml-1 text-[10px] uppercase tracking-wide text-yellow-700 bg-yellow-200 rounded px-1 py-0.5">revisar</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2">{{ p.moneda or "-" }}</td>
+        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.monto_afecto) if p.monto_afecto is not none else "-" }}</td>
+        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.iva) if p.iva is not none else "-" }}</td>
+        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.total) if p.total is not none else "-" }}</td>
+        <td class="px-3 py-2"><a class="text-blue-600 underline" href="/pdf/{{ p.id }}">ver</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="px-3 py-6 text-center text-gray-400">Sin compras registradas todavia.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}
