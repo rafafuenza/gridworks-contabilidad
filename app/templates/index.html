@@ -5,6 +5,17 @@
 <div class="mb-4 p-3 rounded bg-blue-50 border border-blue-200 text-blue-800 text-sm">{{ flash }}</div>
 {% endif %}
 
+<div id="sync-panel" class="hidden mb-4 p-4 rounded bg-blue-50 border border-blue-200">
+  <div class="flex justify-between text-sm text-blue-900 mb-2">
+    <span id="sync-label">Sincronizando…</span>
+    <span id="sync-count" class="font-mono"></span>
+  </div>
+  <div class="w-full bg-blue-100 rounded h-3 overflow-hidden">
+    <div id="sync-bar" class="bg-blue-600 h-3 transition-all duration-300" style="width:0%"></div>
+  </div>
+  <div id="sync-detail" class="text-xs text-blue-800 mt-2"></div>
+</div>
+
 <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
   <form method="get" action="/" class="flex items-end gap-2">
     <div>
@@ -19,9 +30,7 @@
   </form>
 
   <div class="flex gap-2">
-    <form method="post" action="/sync">
-      <button type="submit" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
-    </form>
+    <button id="btn-sync" type="button" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
     <form method="post" action="/aceptar-mes"
           onsubmit="return confirm('Aceptar todas las pendientes del periodo seleccionado y moverlas a declaradas en Gmail?');">
       <input type="hidden" name="mes" value="{{ mes_seleccionado or '' }}">
@@ -116,4 +125,74 @@
   </table>
 </div>
 
+<script>
+(function () {
+  const panel = document.getElementById('sync-panel');
+  const bar = document.getElementById('sync-bar');
+  const label = document.getElementById('sync-label');
+  const count = document.getElementById('sync-count');
+  const detail = document.getElementById('sync-detail');
+  const btn = document.getElementById('btn-sync');
+  let timer = null;
+
+  function mesActual() { return new URLSearchParams(location.search).get('mes') || ''; }
+
+  function render(s) {
+    panel.classList.remove('hidden');
+    if (s.total > 0) {
+      const pct = Math.min(100, Math.round(s.procesados / s.total * 100));
+      bar.style.width = pct + '%';
+      bar.classList.remove('animate-pulse');
+      count.textContent = s.procesados + ' / ' + s.total + '  (' + pct + '%)';
+      label.textContent = s.terminado ? 'Sincronización completa' : 'Revisando correos…';
+    } else {
+      bar.style.width = '100%';
+      bar.classList.add('animate-pulse');
+      count.textContent = '';
+      label.textContent = s.mensaje || 'Conectando a Gmail…';
+    }
+    const partes = [];
+    if (s.nuevos) partes.push(s.nuevos + ' nuevas');
+    if (s.omitidos) partes.push(s.omitidos + ' ya en base');
+    if (s.falta_proveedor) partes.push(s.falta_proveedor + ' sin proveedor');
+    if (s.errores) partes.push(s.errores + ' errores');
+    detail.textContent = s.terminado ? (s.mensaje || '') : partes.join(' · ');
+
+    if (s.terminado) {
+      bar.style.width = '100%';
+      bar.classList.remove('animate-pulse');
+      label.textContent = 'Listo';
+      stop();
+      setTimeout(function () { location.href = '/?mes=' + encodeURIComponent(mesActual()); }, 1500);
+    }
+  }
+
+  function poll() {
+    fetch('/sync/estado').then(r => r.json()).then(function (s) {
+      if (s.running || s.terminado) render(s);
+    }).catch(function () {});
+  }
+  function start() { if (timer) return; poll(); timer = setInterval(poll, 1200); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  if (btn) {
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.textContent = 'Sincronizando…';
+      fetch('/sync', { method: 'POST' })
+        .then(r => r.json())
+        .then(function () { start(); })
+        .catch(function () { btn.disabled = false; btn.textContent = 'Actualizar ahora'; });
+    });
+  }
+
+  // Si al abrir la pagina ya hay un sync en curso (ej. cerraste y volviste), retoma la barra
+  fetch('/sync/estado').then(r => r.json()).then(function (s) {
+    if (s.running) {
+      if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
+      start();
+    }
+  }).catch(function () {});
+})();
+</script>
 {% endblock %}

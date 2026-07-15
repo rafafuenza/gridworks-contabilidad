@@ -1,9 +1,10 @@
 import io
+import threading
 import zipfile
 from collections import defaultdict
 
 from fastapi import FastAPI, Request, Depends, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, PlainTextResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import distinct
@@ -92,19 +93,46 @@ def dashboard(request: Request, mes: str = "", flash: str = "", db: Session = De
     )
 
 
-@app.post("/sync")
-def trigger_sync(request: Request, db: Session = Depends(get_db)):
-    require_login(request)
+# --- Sincronizacion en segundo plano con progreso (estado en memoria, 1 instancia) ---
+_sync_state = {"running": False, "terminado": False, "total": 0, "procesados": 0,
+               "nuevos": 0, "omitidos": 0, "falta_proveedor": 0, "errores": 0, "mensaje": ""}
+_sync_lock = threading.Lock()
+
+
+def _run_sync_bg():
+    db = SessionLocal()
     try:
-        stats = gmail_sync.sync(db)
-        flash = (
-            f"Listo. Revisados {stats['revisados']}, nuevos {stats['nuevos']}, "
-            f"ya en base {stats['omitidos_ya_en_base']}, sin factura {stats['sin_invoice']}, "
-            f"falta proveedor {stats['falta_proveedor']}, errores {stats['errores']}."
+        stats = gmail_sync.sync(db, progress=_sync_state)
+        _sync_state["mensaje"] = (
+            f"Listo. Nuevos {stats['nuevos']}, ya en base {stats['omitidos_ya_en_base']}, "
+            f"sin factura {stats['sin_invoice']}, falta proveedor {stats['falta_proveedor']}, "
+            f"errores {stats['errores']}."
         )
     except Exception as e:
-        flash = f"Error al sincronizar: {e}"
-    return RedirectResponse(f"/?flash={flash}", status_code=303)
+        _sync_state["mensaje"] = f"Error al sincronizar: {e}"
+    finally:
+        db.close()
+        _sync_state["running"] = False
+        _sync_state["terminado"] = True
+
+
+@app.post("/sync")
+def trigger_sync(request: Request):
+    require_login(request)
+    with _sync_lock:
+        if _sync_state["running"]:
+            return JSONResponse({"running": True, "ya_en_curso": True})
+        _sync_state.update({"running": True, "terminado": False, "total": 0, "procesados": 0,
+                            "nuevos": 0, "omitidos": 0, "falta_proveedor": 0, "errores": 0,
+                            "mensaje": "Conectando a Gmail..."})
+    threading.Thread(target=_run_sync_bg, daemon=True).start()
+    return JSONResponse({"running": True})
+
+
+@app.get("/sync/estado")
+def sync_estado(request: Request):
+    require_login(request)
+    return JSONResponse(_sync_state)
 
 
 @app.post("/aceptar/{purchase_id}")

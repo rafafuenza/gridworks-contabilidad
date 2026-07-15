@@ -42,13 +42,21 @@ def _extract_sender_email(msg) -> str:
     return addr.lower()
 
 
-def sync(db: Session, max_messages: int = None) -> dict:
+def sync(db: Session, max_messages: int = None, progress: dict = None) -> dict:
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         raise RuntimeError("Faltan GMAIL_ADDRESS / GMAIL_APP_PASSWORD en las variables de entorno.")
 
     mantenedor.ensure_seed(db)
     stats = {"revisados": 0, "nuevos": 0, "omitidos_ya_en_base": 0, "sin_invoice": 0,
              "falta_proveedor": 0, "errores": 0}
+
+    def _reportar():
+        if progress is not None:
+            progress["procesados"] = stats["revisados"]
+            progress["nuevos"] = stats["nuevos"]
+            progress["omitidos"] = stats["omitidos_ya_en_base"]
+            progress["falta_proveedor"] = stats["falta_proveedor"]
+            progress["errores"] = stats["errores"]
 
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -63,6 +71,9 @@ def sync(db: Session, max_messages: int = None) -> dict:
         if max_messages:
             uids = uids[:max_messages]
 
+        if progress is not None:
+            progress["total"] = len(uids)
+
         for uid in uids:
             stats["revisados"] += 1
             try:
@@ -70,6 +81,7 @@ def sync(db: Session, max_messages: int = None) -> dict:
             except Exception:
                 logger.exception("Error procesando uid=%s", uid)
                 stats["errores"] += 1
+            _reportar()
     finally:
         imap.logout()
 
