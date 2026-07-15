@@ -30,6 +30,33 @@ partir de correos de Gmail. Mas adelante se va a sumar **Libro de Ventas** e
 - **Dominio**: eventualmente `conta.gridworks.cl` (dominio ya existe, falta
   agregar el CNAME cuando se despliegue).
 
+## Mantenedor de proveedores y flujo de aceptacion (importante)
+
+- **Mantenedor** (`app/mantenedor.py` + tabla `proveedores`): es la **fuente de
+  verdad** de los datos fiscales de cada empresa (RUT, tratamiento afecto/exento,
+  moneda, si esta en la nomina IVA digital, fuente del RUT). Los parsers ya NO
+  traen el RUT hardcodeado; lo aporta el mantenedor cruzando por `provider_key`.
+  Se siembra solo (`ensure_seed`) con: anthropic (59.250.690-4), aws
+  (59.292.930-9, verificado en nomina), railway y hetzner (55.555.555-5 generico,
+  verificado que NO estan en la nomina), nic-chile (60.910.000-1, exento).
+- **Enriquecimiento manual (lo hace el asistente, no un cron):** si aparece un
+  proveedor que no esta en el mantenedor, la factura entra igual con RUT generico
+  y queda marcada `falta_proveedor`. El enriquecimiento (buscar el RUT en la
+  nomina IVA digital del SII -- https://www.sii.cl/vat/dwn_esp.html -- y agregar
+  la fila al mantenedor) se hace a mano en una sesion de trabajo, y despues
+  `reparse` rellena el RUT. Por decision del usuario esto es manual por ahora.
+- **Flujo de labels / estado:**
+  - Se procesa todo lo que este en `label:gridworks-contabilidad` (los ya
+    guardados se saltan por Message-ID). El sync **ya no** aplica ninguna
+    sub-label automaticamente.
+  - Cada factura nace `estado="pendiente"`. En la web hay boton **Aceptar** por
+    fila y **Aceptar (lote)** por mes (el lote omite las que estan en revision
+    manual).
+  - Al aceptar: `estado="aceptada"` y en Gmail se **mueve** el correo (se quita
+    `gridworks-contabilidad` y se agrega `gridworks-contabilidad-sii-compras-declaradas`).
+    Ver `gmail_sync.mover_a_declaradas`. El label de declaradas es configurable
+    (`GMAIL_DECLARED_LABEL`).
+
 ## Flujo de sincronizacion (IMAP, no Gmail API)
 
 Se probaron 3 caminos para bajar adjuntos de Gmail: (1) el conector Gmail
@@ -40,24 +67,48 @@ que se uso, funciona bien. Por eso `app/gmail_sync.py` usa `imaplib` directo,
 no la API REST de Gmail.
 
 Detalles del sync:
-- Busca correos con `label:gridworks-contabilidad has:attachment` que **no**
-  tengan la sub-label `gridworks-contabilidad/procesado` (asi nunca se
-  procesa dos veces; la sub-label se crea sola en Gmail al aplicarla).
+- Busca correos con `label:gridworks-contabilidad has:attachment`. Para no
+  procesar dos veces se saltan los que ya estan en la base (por Message-ID, con
+  un fetch liviano de solo el header). La separacion pendiente/declarada la da el
+  movimiento de label al aceptar (ver seccion del mantenedor arriba), no una
+  sub-label automatica.
 - De cada correo toma **solo el adjunto de la Invoice**, no el Receipt de
   pago (el Receipt es solo comprobante, la Invoice es el documento contable).
-- El parser de cada PDF esta en `app/parsers/`, registrado por dominio del
-  remitente en `app/parsers/registry.py`. Hoy solo existe un parser dedicado:
-  `anthropic.py`. Todo lo demas cae al parser generico
-  (`generic.py`, best-effort) y queda marcado `revision_manual=True` (se ve
-  en amarillo en la UI).
+- El parser de cada PDF esta en `app/parsers/`. La deteccion es **por contenido
+  del PDF** (no por dominio del remitente), en `app/parsers/registry.py`: cada
+  proveedor es una `ProviderConfig` con una funcion `detect(text)`. Esto permite
+  re-parsear PDFs ya guardados sin el remitente original.
+  - `stripe_invoice.py`: parser **compartido** para la plantilla de Stripe, que
+    usan Anthropic, Railway y a futuro la mayoria de los SaaS. Maneja la variante
+    con IVA (Anthropic) y sin IVA (Railway).
+  - Parsers dedicados de formato propio: `aws.py`, `hetzner.py`, `nic.py`
+    (NIC Chile es DTE nacional exento, en CLP, con RUT en el documento).
+  - `generic.py` sigue como fallback best-effort (marca `revision_manual=True`).
+  - Agregar un proveedor nuevo = una entrada en `PROVIDERS` (si es Stripe, reusa
+    `stripe_invoice.parse`).
+  - Hay una **capa de validacion** en el registry: si falta numero/total o si
+    `afecto+exento+iva` no cuadra con `total`, marca `revision_manual`.
+  - **Re-parseo del historico**: `python -m app.tasks.reparse` re-aplica los
+    parsers sobre los PDFs ya guardados en la base (util al agregar parsers
+    nuevos o corregir bugs), sin volver a Gmail.
+- **AWS cobra 19% (IVA chileno)** en su factura. Queda con RUT generico
+  extranjero y una nota: falta verificar su RUT en la nomina IVA digital del SII
+  y confirmar con el contador si ese IVA es recuperable (en B2B el tratamiento
+  puede diferir).
 - **RUT de Anthropic en Chile**: `59.250.690-4` -- se saco de la nomina oficial
   del SII de contribuyentes extranjeros inscritos en IVA digital
   (https://www.sii.cl/vat/dwn_esp.html). Para proveedores sin parser dedicado
   se usa el RUT generico `55.555.555-5` (factura de compra DTE 46).
-- **Moneda**: si el texto del PDF menciona "USD" se guarda `moneda=USD` y
-  **los montos quedan en USD, no se convierten a CLP** (decision explicita
-  del usuario). Igual se busca el tipo de cambio del dia via la API publica
-  `mindicador.cl` y se guarda en `tipo_cambio` como referencia.
+- **Moneda y conversion a CLP**: los montos se guardan en la moneda original de
+  la factura (USD o CLP). Para las USD se busca el **dolar observado** de la fecha
+  de emision y se guarda en `tipo_cambio` + `tipo_cambio_fecha`. El dolar observado
+  es el tipo de cambio que el propio SII publica
+  (https://www.sii.cl/valores_y_fechas/dolar/) y el que corresponde usar para
+  operaciones en moneda extranjera; ese mismo valor lo entrega `mindicador.cl` en
+  JSON (viene del Banco Central), por eso se consume de ahi.
+  El **Excel** (`excel_export.py`) muestra los montos originales y agrega columnas
+  `AFECTO/EXENTO/IVA/TOTAL CLP` convertidas con formula `=ROUND(monto*TC,0)`
+  (auditable); el total del libro suma las columnas en CLP.
 - Un bug ya resuelto: pdfplumber devuelve caracteres `\x00` en vez de
   espacios en los PDFs de Anthropic (fuente custom) -- se normalizan en
   `_extract_pdf_text` antes de aplicar cualquier regex. Si se agregan
@@ -66,33 +117,47 @@ Detalles del sync:
 
 ## Estado actual (al momento del handoff)
 
-- Repo scaffolded y **pusheado a GitHub**, probado localmente end-to-end
-  (dashboard, export a Excel con formulas de totales, export de PDFs en zip,
-  parser de Anthropic) con SQLite y 2 facturas de prueba reales.
+- Repo scaffolded y **pusheado a GitHub**. Probado localmente end-to-end con
+  SQLite. Nota de entorno: en este equipo hay **Python 3.14**, que obligo a
+  subir los pins de `sqlalchemy` (2.0.51) y `psycopg2-binary` (2.9.12) para que
+  haya wheels; se agrego `python-dotenv` y `config.py` ahora hace `load_dotenv()`.
+- **Primer sync real hecho**: se procesaron **102 facturas** reales de la label.
+  98 son de Anthropic (parser dedicado, limpias) y 4 de otros proveedores
+  (Hetzner, AWS, Railway, NIC Chile) que al principio caian en revision manual.
+- Se agregaron parsers dedicados para esos 4 y, tras `reparse`, **las 102 quedan
+  parseadas sin revision manual**. Se agregaron ademas la conversion a CLP en el
+  Excel y la capa de validacion.
 - **Railway: pendiente que el usuario lo despliegue** (instrucciones en
   README.md -- crear servicio web + Postgres + variables de entorno + Cron
-  Job). Verificar con el usuario si ya lo hizo.
-- Solo se probo con 2 correos de prueba. **Falta correr el sync completo**
-  contra los ~90 correos reales que tiene la label `gridworks-contabilidad`
-  y revisar cuantos caen en "revision manual" (proveedores sin parser
-  dedicado, ej. Hetzner que tambien aparecia en la label).
+  Job). Verificar con el usuario si ya lo hizo. Ojo: la base local (SQLite) tiene
+  las 102 facturas; al desplegar en Postgres se parte de cero y hay que re-sincar
+  (los correos siguen con la sub-label `procesado`, asi que revisar como migrar).
 
 ## Pendientes / proximos pasos sugeridos
 
-1. Confirmar deploy en Railway y correr el primer sync real.
-2. Agregar parsers dedicados para otros proveedores frecuentes (ej. Hetzner,
-   que emite un formato de invoice distinto).
-3. Libro de Ventas (mismo patron: modelo `Sale`, sync propio si aplica,
+1. Confirmar deploy en Railway (el primer sync real ya se corrio local).
+   Definir como llevar/re-sincar las 102 facturas a la base de Postgres.
+2. Verificar el RUT de AWS en la nomina IVA digital del SII y el tratamiento
+   del IVA que cobra (con el contador). Agregar parsers dedicados a nuevos
+   proveedores frecuentes que vayan apareciendo (una entrada en `PROVIDERS`).
+3. UI para editar a mano una fila del "queue de revision" (hoy solo se corrige
+   re-parseando). Backfill opcional de `tipo_cambio_fecha` en las facturas que
+   reusaron TC del primer sync (cuesta llamadas a la API).
+4. Tests de regresion usando los 102 PDFs reales como fixtures.
+5. Dashboard: los tiles de totales hoy suman montos mezclando USD+CLP; conviene
+   mostrarlos convertidos a CLP como en el Excel.
+6. Libro de Ventas (mismo patron: modelo `Sale`, sync propio si aplica,
    export a Excel).
-4. Integracion con el SII (aun no definida en detalle -- pendiente de
+7. Integracion con el SII (aun no definida en detalle -- pendiente de
    conversacion con el usuario sobre alcance: ¿carga de facturas de venta
    electronicas? ¿consulta de estado? etc.)
-5. Dominio custom `conta.gridworks.cl` en Railway.
-6. Revisar si vale la pena mover el shared-secret auth a algo mas robusto
+8. Dominio custom `conta.gridworks.cl` en Railway.
+9. Revisar si vale la pena mover el shared-secret auth a algo mas robusto
    (Google OAuth) si mas de una persona va a usar la app.
 
 ## Variables de entorno (ver `.env.example`)
 
 `DATABASE_URL` (la inyecta Railway), `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`,
-`GMAIL_LABEL`, `APP_PASSWORD`, `SECRET_KEY`. Ninguna esta en el repo, todas
-se configuran como secretos en Railway (o en `.env` local, gitignored).
+`GMAIL_LABEL`, `GMAIL_DECLARED_LABEL`, `APP_PASSWORD`, `SECRET_KEY`. Ninguna esta
+en el repo, todas se configuran como secretos en Railway (o en `.env` local,
+gitignored).

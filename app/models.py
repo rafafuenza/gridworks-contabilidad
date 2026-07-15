@@ -4,6 +4,26 @@ from sqlalchemy.sql import func
 from app.db import Base
 
 
+class Proveedor(Base):
+    """Mantenedor de empresas: fuente de verdad de los datos fiscales de cada
+    proveedor. Se puebla manualmente (yo lo enriquezco desde la nomina IVA
+    digital del SII cuando aparece un proveedor nuevo)."""
+    __tablename__ = "proveedores"
+
+    id = Column(Integer, primary_key=True)
+    clave = Column(String, unique=True, nullable=False, index=True)  # slug de deteccion, ej "aws"
+    nombre = Column(String, nullable=False)
+    rut = Column(String, nullable=True)
+    pais = Column(String, nullable=True)
+    moneda_default = Column(String, nullable=True)          # "USD" | "CLP"
+    tratamiento = Column(String, nullable=True)             # "afecto" | "exento"
+    en_nomina_iva_digital = Column(Boolean, default=False)
+    fuente_rut = Column(String, nullable=True)              # de donde salio el RUT
+    notas = Column(Text, nullable=True)
+    creado_en = Column(DateTime(timezone=True), server_default=func.now())
+    actualizado_en = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Purchase(Base):
     __tablename__ = "purchases"
 
@@ -26,12 +46,15 @@ class Purchase(Base):
     monto_exento = Column(Numeric(14, 2), nullable=True)
     iva = Column(Numeric(14, 2), nullable=True)
     total = Column(Numeric(14, 2), nullable=True)
-    tipo_cambio = Column(Numeric(10, 2), nullable=True)  # USD/CLP del dia de la factura, informativo
+    tipo_cambio = Column(Numeric(10, 2), nullable=True)  # USD/CLP (dolar observado) usado para convertir
+    tipo_cambio_fecha = Column(Date, nullable=True)  # fecha del dolar observado aplicado (puede ser dia habil previo)
 
     pdf_filename = Column(String, nullable=True)
     pdf_data = Column(LargeBinary, nullable=True)
 
     revision_manual = Column(Boolean, default=False)  # True si el parser no pudo extraer todo con confianza
+    falta_proveedor = Column(Boolean, default=False)  # True si el proveedor no esta en el mantenedor con RUT real
+    estado = Column(String, default="pendiente", index=True)  # "pendiente" | "aceptada"
     notas = Column(Text, nullable=True)
 
     creado_en = Column(DateTime(timezone=True), server_default=func.now())

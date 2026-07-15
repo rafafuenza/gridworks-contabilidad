@@ -3,14 +3,12 @@ from dateutil import parser as dateparser
 
 from app.parsers.base import ParsedInvoice
 
-RUT_GENERICO_EXTRANJERO = "55.555.555-5"  # RUT generico SII para proveedor extranjero sin registro
-
 
 def parse(text: str, sender_name: str = "", sender_domain: str = "") -> ParsedInvoice:
-    """Best-effort para proveedores sin parser dedicado. Siempre queda marcado para revision manual."""
+    """Best-effort para proveedores sin parser dedicado. Siempre queda marcado para
+    revision manual. No asigna RUT: lo hace el mantenedor (RUT generico + falta_proveedor)."""
     result = ParsedInvoice(
         proveedor=sender_name or sender_domain or "Desconocido",
-        rut_proveedor=RUT_GENERICO_EXTRANJERO,
         revision_manual=True,
         notas="Proveedor sin parser dedicado, extraccion best-effort. Revisar montos manualmente.",
     )

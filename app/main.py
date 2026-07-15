@@ -8,11 +8,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import distinct
 
-from app.config import APP_PASSWORD
-from app.db import get_db, init_db
+from app.config import APP_PASSWORD, COOKIE_SECURE
+from app.db import get_db, init_db, SessionLocal
 from app.models import Purchase
 from app.auth import require_login, is_valid_session, create_session_cookie, COOKIE_NAME
-from app import gmail_sync
+from app import gmail_sync, mantenedor
 from app.excel_export import build_workbook
 
 app = FastAPI(title="GridWorks Contabilidad")
@@ -22,6 +22,11 @@ templates = Jinja2Templates(directory="app/templates")
 @app.on_event("startup")
 def on_startup():
     init_db()
+    db = SessionLocal()
+    try:
+        mantenedor.ensure_seed(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -40,7 +45,8 @@ def login_form(request: Request):
 def login_submit(request: Request, password: str = Form(...)):
     if APP_PASSWORD and password == APP_PASSWORD:
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(COOKIE_NAME, create_session_cookie(), httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30)
+        resp.set_cookie(COOKIE_NAME, create_session_cookie(), httponly=True, samesite="lax",
+                        secure=COOKIE_SECURE, max_age=60 * 60 * 24 * 30)
         return resp
     return templates.TemplateResponse(
         "login.html", {"request": request, "authenticated": False, "error": "Clave incorrecta"}, status_code=401
@@ -93,12 +99,63 @@ def trigger_sync(request: Request, db: Session = Depends(get_db)):
         stats = gmail_sync.sync(db)
         flash = (
             f"Listo. Revisados {stats['revisados']}, nuevos {stats['nuevos']}, "
-            f"ya procesados {stats['omitidos_ya_procesados']}, sin factura {stats['sin_invoice']}, "
-            f"errores {stats['errores']}."
+            f"ya en base {stats['omitidos_ya_en_base']}, sin factura {stats['sin_invoice']}, "
+            f"falta proveedor {stats['falta_proveedor']}, errores {stats['errores']}."
         )
     except Exception as e:
         flash = f"Error al sincronizar: {e}"
     return RedirectResponse(f"/?flash={flash}", status_code=303)
+
+
+@app.post("/aceptar/{purchase_id}")
+def aceptar_uno(request: Request, purchase_id: int, mes: str = Form(""), db: Session = Depends(get_db)):
+    require_login(request)
+    p = db.query(Purchase).get(purchase_id)
+    if not p:
+        return RedirectResponse("/?flash=Documento no encontrado", status_code=303)
+    if p.estado == "aceptada":
+        return RedirectResponse(f"/?mes={mes}&flash=Ya estaba aceptada", status_code=303)
+    try:
+        res = gmail_sync.mover_a_declaradas(p.gmail_message_id)
+        p.estado = "aceptada"
+        db.commit()
+        flash = f"Factura {p.numero or p.id} aceptada y movida a declaradas."
+        if res.get("no_encontrados"):
+            flash += " (Aviso: no se encontro el correo en Gmail para mover el label.)"
+    except Exception as e:
+        flash = f"Error al aceptar: {e}"
+    return RedirectResponse(f"/?mes={mes}&flash={flash}", status_code=303)
+
+
+@app.post("/aceptar-mes")
+def aceptar_mes(request: Request, mes: str = Form(""), db: Session = Depends(get_db)):
+    require_login(request)
+    query = db.query(Purchase).filter(Purchase.estado != "aceptada", Purchase.revision_manual == False)  # noqa: E712
+    if mes:
+        query = query.filter(Purchase.periodo == mes)
+    pendientes = query.all()
+
+    total_pend = db.query(Purchase).filter(Purchase.estado != "aceptada")
+    if mes:
+        total_pend = total_pend.filter(Purchase.periodo == mes)
+    omitidas_revision = total_pend.count() - len(pendientes)
+
+    if not pendientes:
+        return RedirectResponse(f"/?mes={mes}&flash=No hay pendientes aceptables en el periodo", status_code=303)
+    try:
+        ids = [p.gmail_message_id for p in pendientes if p.gmail_message_id]
+        res = gmail_sync.mover_a_declaradas(ids) if ids else {"movidos": 0, "no_encontrados": 0}
+        for p in pendientes:
+            p.estado = "aceptada"
+        db.commit()
+        flash = f"{len(pendientes)} facturas aceptadas y movidas a declaradas."
+        if omitidas_revision:
+            flash += f" Se omitieron {omitidas_revision} en revision manual (aceptar una a una)."
+        if res.get("no_encontrados"):
+            flash += f" ({res['no_encontrados']} sin correo encontrado en Gmail.)"
+    except Exception as e:
+        flash = f"Error al aceptar el lote: {e}"
+    return RedirectResponse(f"/?mes={mes}&flash={flash}", status_code=303)
 
 
 @app.get("/export.xlsx")

@@ -15,5 +15,7 @@ class ParsedInvoice:
     monto_exento: Optional[float] = None
     iva: Optional[float] = None
     total: Optional[float] = None
+    provider_key: Optional[str] = None   # slug del proveedor detectado, para cruzar con el mantenedor
     revision_manual: bool = False
+    falta_proveedor: bool = False        # True si el proveedor no esta en el mantenedor con RUT real
     notas: Optional[str] = None
