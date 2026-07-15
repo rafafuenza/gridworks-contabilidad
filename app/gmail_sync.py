@@ -5,7 +5,11 @@ Idempotente: los correos que ya estan en la base se saltan (por Message-ID)."""
 import email
 import imaplib
 import logging
+import smtplib
+import time
 from email.header import decode_header
+from email.mime.text import MIMEText
+from email.utils import make_msgid, formatdate
 
 from sqlalchemy.orm import Session
 
@@ -244,3 +248,45 @@ def _uid_de_message_id(imap: imaplib.IMAP4_SSL, message_id: str):
     if typ == "OK" and data and data[0].split():
         return data[0].split()[0]
     return None
+
+
+def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str) -> str:
+    """Envia un correo por SMTP (Gmail) y le aplica una etiqueta de Gmail a la copia
+    guardada (en Enviados). Devuelve el Message-ID usado."""
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        raise RuntimeError("Faltan GMAIL_ADDRESS / GMAIL_APP_PASSWORD en las variables de entorno.")
+
+    msg = MIMEText(cuerpo, "plain", "utf-8")
+    msg["Subject"] = asunto
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = to
+    msg["Date"] = formatdate(localtime=True)
+    mid = make_msgid()
+    msg["Message-ID"] = mid
+
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
+        s.starttls()
+        s.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        s.sendmail(GMAIL_ADDRESS, [to], msg.as_string())
+
+    _etiquetar_mensaje(mid, etiqueta)
+    return mid
+
+
+def _etiquetar_mensaje(message_id: str, etiqueta: str, intentos: int = 6) -> bool:
+    """Busca el correo recien enviado (por Message-ID) y le agrega la etiqueta.
+    Reintenta unos segundos porque la copia en Enviados puede tardar en indexarse."""
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    try:
+        all_mail = _find_all_mail_folder(imap)
+        imap.select(f'"{all_mail}"')
+        for _ in range(intentos):
+            uid = _uid_de_message_id(imap, message_id)
+            if uid:
+                imap.uid("store", uid, "+X-GM-LABELS", f'("{etiqueta}")')
+                return True
+            time.sleep(1)
+    finally:
+        imap.logout()
+    return False

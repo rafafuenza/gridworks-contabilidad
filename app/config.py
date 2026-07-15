@@ -22,6 +22,9 @@ GMAIL_DECLARED_LABEL = os.environ.get(
     "GMAIL_DECLARED_LABEL", "Gridworks/Contabilidad/SII/Compras Declaradas"
 )
 
+# A quien se le avisa por correo cuando se acepta un lote (compras declaradas)
+NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "contabilidad@gridworks.cl")
+
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 # En produccion (HTTPS, ej. Railway) poner COOKIE_SECURE=true para que la cookie

@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import distinct
 
-from app.config import APP_PASSWORD, COOKIE_SECURE
+from app.config import APP_PASSWORD, COOKIE_SECURE, NOTIFY_EMAIL, GMAIL_LABEL
 from app.db import get_db, init_db, SessionLocal
 from app.models import Purchase
 from app.auth import require_login, is_valid_session, create_session_cookie, COOKIE_NAME
@@ -174,10 +174,12 @@ def _run_aceptar_bg(mes: str):
         pend = _pendientes_aceptables(db, mes).all()
         by_mid = {}
         ids = []
+        resumen = []  # para el correo de aviso
         for p in pend:
             if p.gmail_message_id:
                 by_mid.setdefault(p.gmail_message_id, []).append(p.id)
                 ids.append(p.gmail_message_id)
+            resumen.append((p.numero, p.proveedor, float(p.total) if p.total is not None else None, p.moneda))
 
         def on_result(mid, ok):
             for pid in by_mid.get(mid, []):
@@ -190,12 +192,34 @@ def _run_aceptar_bg(mes: str):
         _accept_state["mensaje"] = f"{stats['movidos']} facturas aceptadas y movidas a declaradas."
         if stats.get("no_encontrados"):
             _accept_state["mensaje"] += f" {stats['no_encontrados']} sin correo encontrado en Gmail."
+
+        # Aviso por correo a contabilidad (con la etiqueta de contabilidad)
+        if stats["movidos"] > 0:
+            try:
+                _enviar_aviso_declaradas(mes, stats["movidos"], resumen)
+                _accept_state["mensaje"] += f" Aviso enviado a {NOTIFY_EMAIL}."
+            except Exception as e:
+                _accept_state["mensaje"] += f" (No se pudo enviar el aviso: {e})"
     except Exception as e:
         _accept_state["mensaje"] = f"Error al aceptar el lote: {e}"
     finally:
         db.close()
         _accept_state["running"] = False
         _accept_state["terminado"] = True
+
+
+def _enviar_aviso_declaradas(mes, cantidad, resumen):
+    periodo = mes or "todos los periodos"
+    lineas = []
+    for numero, proveedor, total, moneda in resumen:
+        monto = f"{total:,.2f} {moneda}" if total is not None else ""
+        lineas.append(f"- {numero or 's/n'} · {proveedor or ''} · {monto}".rstrip())
+    asunto = f"Compras declaradas: {cantidad} facturas ({periodo})"
+    cuerpo = (
+        f"Se aceptaron y movieron a 'Compras Declaradas' {cantidad} facturas "
+        f"({periodo}):\n\n" + "\n".join(lineas) + "\n"
+    )
+    gmail_sync.enviar_correo_con_etiqueta(NOTIFY_EMAIL, asunto, cuerpo, GMAIL_LABEL)
 
 
 @app.post("/aceptar-mes")
