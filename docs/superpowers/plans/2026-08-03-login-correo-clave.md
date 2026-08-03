@@ -1278,7 +1278,8 @@ Aquí `app/main.py` vuelve a cargar. Cambia el login, y las 9 rutas existentes p
 
 - [ ] **Step 1: Cambiar los imports de `app/main.py`**
 
-Reemplaza las líneas 12-17:
+Reemplaza las líneas 12-17 (nota que `BackgroundTasks` se suma al import de
+`fastapi` de la línea 6, que lo necesitan las rutas de las Tasks 14 y 16):
 
 ```python
 from app.config import COOKIE_SECURE, NOTIFY_EMAIL, GMAIL_LABEL, BASE_URL
@@ -1717,10 +1718,13 @@ Agrega en `app/main.py`, después de la ruta `/logout`:
 MENSAJE_ENLACE = "Si el correo está registrado, te enviamos un enlace para restablecer tu clave."
 
 
-def _enviar_enlace_reset(db, u: Usuario) -> None:
-    """Manda el enlace. Silencia los errores de SMTP a proposito: si el correo
-    no sale, la persona no debe enterarse por un 500, y el aviso queda en el log."""
-    token = crear_token_reset(u)
+def _enviar_enlace_reset(email: str, token: str) -> None:
+    """Corre DESPUES de responder, no dentro del request. Recibe valores planos
+    y no el objeto ORM, porque para cuando esto se ejecuta la sesion de base de
+    datos ya se cerro.
+
+    Silencia los errores de SMTP a proposito: si el correo no sale, la persona
+    no debe enterarse por un 500, y el aviso queda en el log."""
     cuerpo = (
         f"Para definir tu clave de acceso al Libro de Compras, entra a este enlace:\n\n"
         f"{BASE_URL}/restablecer/{token}\n\n"
@@ -1728,10 +1732,9 @@ def _enviar_enlace_reset(db, u: Usuario) -> None:
         f"Si no pediste esto, ignora el correo: tu clave actual sigue funcionando.\n"
     )
     try:
-        gmail_sync.enviar_correo(u.email, "Restablecer tu clave · Libro de Compras", cuerpo)
-        usuarios.marcar_reset_enviado(db, u)
+        gmail_sync.enviar_correo(email, "Restablecer tu clave · Libro de Compras", cuerpo)
     except Exception as e:
-        print(f"[reset] No se pudo enviar el correo a {u.email}: {e}")
+        print(f"[reset] No se pudo enviar el correo a {email}: {e}")
 
 
 @app.get("/olvide-clave", response_class=HTMLResponse)
@@ -1740,10 +1743,16 @@ def olvide_clave_form(request: Request):
 
 
 @app.post("/olvide-clave", response_class=HTMLResponse)
-def olvide_clave_submit(request: Request, email: str = Form(...), db: Session = Depends(get_db)):
+def olvide_clave_submit(request: Request, tareas: BackgroundTasks, email: str = Form(...),
+                        db: Session = Depends(get_db)):
     u = usuarios.por_email(db, email)
-    if u and u.activo and usuarios.puede_enviar_reset(u):
-        _enviar_enlace_reset(db, u)
+    # El turno se toma AQUI, dentro del request, y el envio se agenda para
+    # despues de responder. Si el correo se mandara aqui mismo, un correo con
+    # cuenta tardaria lo que tarda el SMTP y uno sin cuenta contestaria al
+    # instante: el mensaje seria el mismo pero el tiempo delataria cuales
+    # existen, que es justo lo que este flujo trata de no revelar.
+    if u and u.activo and usuarios.reclamar_envio_reset(db, u):
+        tareas.add_task(_enviar_enlace_reset, u.email, crear_token_reset(u))
     # Respuesta identica exista o no la cuenta, y haya salido o no el correo.
     return templates.TemplateResponse(
         "olvide_clave.html", {"request": request, "usuario": None, "mensaje": MENSAJE_ENLACE}
@@ -2116,15 +2125,16 @@ def usuarios_lista(request: Request, usuario: Usuario = Depends(require_login),
 
 
 @app.post("/usuarios", response_class=HTMLResponse)
-def usuarios_accion(request: Request, accion: str = Form(...), email: str = Form(""),
-                    nombre: str = Form(""), usuario_id: str = Form(""),
+def usuarios_accion(request: Request, tareas: BackgroundTasks, accion: str = Form(...),
+                    email: str = Form(""), nombre: str = Form(""), usuario_id: str = Form(""),
                     usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     if accion == "invitar":
         if usuarios.por_email(db, email):
             return _pantalla_usuarios(request, db, usuario,
                                       error=f"{email} ya tiene cuenta.", status=400)
         nuevo = usuarios.crear(db, email, nombre=nombre)
-        _enviar_enlace_reset(db, nuevo)
+        usuarios.reclamar_envio_reset(db, nuevo)  # cuenta recien creada: siempre gana el turno
+        tareas.add_task(_enviar_enlace_reset, nuevo.email, crear_token_reset(nuevo))
         return _pantalla_usuarios(
             request, db, usuario,
             mensaje=f"Cuenta creada. Le enviamos a {nuevo.email} un enlace para definir su clave."
