@@ -46,6 +46,9 @@ def verify_password(plain: str, guardado: str) -> bool:
         esperado = base64.b64decode(hash_b64)
         # defensa contra una fila manipulada: no dejar que n/r/p disparen una
         # asignacion de memoria enorme antes de llamar a scrypt
+        # esto es un techo de lo que se acepta, no una garantia de que toda
+        # combinacion aceptada sea calculable bajo _MAXMEM (ej: n=2**17 con
+        # r=16 y p=4 supera _MAXMEM y hashlib.scrypt fallaria igual)
         if not (2 ** 12 <= n <= 2 ** 17 and 1 <= r <= 16 and 1 <= p <= 4 and len(esperado) == _DKLEN):
             return False
         plain = unicodedata.normalize("NFC", plain)

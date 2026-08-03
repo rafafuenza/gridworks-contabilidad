@@ -51,7 +51,7 @@ def test_verify_rechaza_un_algoritmo_distinto():
 def test_verify_rechaza_parametros_fuera_de_rango_sin_asignar_memoria():
     guardado = hash_password("x")
     partes = guardado.split("$")
-    partes[1] = "99999999"
+    partes[1] = str(2 ** 20)
     manipulado = "$".join(partes)
 
     assert verify_password("x", manipulado) is False
