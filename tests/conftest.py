@@ -2,7 +2,10 @@ import os
 
 # Debe ir antes de importar cualquier cosa de app: config.py se niega a cargar
 # sin SECRET_KEY, y no queremos que la suite dependa del .env de la maquina.
-os.environ.setdefault("SECRET_KEY", "clave-solo-para-pruebas-con-largo-suficiente-abcdefgh")
+# Se pisa sin condicion, no con setdefault: con setdefault una SECRET_KEY corta
+# en el ambiente rompe la suite entera al recolectar, y una larga se cuela como
+# la clave con que se firman las cookies de prueba.
+os.environ["SECRET_KEY"] = "clave-solo-para-pruebas-con-largo-suficiente-abcdefgh"
 
 import pytest
 from sqlalchemy import create_engine

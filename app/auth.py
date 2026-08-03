@@ -42,6 +42,10 @@ def usuario_actual(request: Request, db: Session):
         return None
     if not isinstance(version, int) or isinstance(version, bool):
         return None
+    # Un entero valido pero enorme llega igual al driver y revienta con un 500
+    # (OverflowError en SQLite, DataError en Postgres). El id es un INTEGER.
+    if not 0 < uid < 2 ** 31 or not 0 < version < 2 ** 31:
+        return None
 
     u = db.query(Usuario).filter(Usuario.id == uid).first()
     if u is None or not u.activo:
