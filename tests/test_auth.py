@@ -123,3 +123,63 @@ def test_secret_key_invalida_no_arranca(monkeypatch, valor):
         # el mismo estado valido con el que arrancaron las demas pruebas.
         monkeypatch.undo()
         importlib.reload(config_module)
+
+
+def test_un_token_de_reset_identifica_al_usuario(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+
+    encontrado = auth.leer_token_reset(auth.crear_token_reset(u), db)
+
+    assert encontrado is not None
+    assert encontrado.email == "rafael@gridworks.cl"
+
+
+def test_un_token_de_reset_ya_usado_se_rechaza(db):
+    """Al cambiar la clave sube token_version, y eso mata el enlace. Es lo que
+    lo hace de un solo uso sin llevar registro de tokens gastados."""
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    token = auth.crear_token_reset(u)
+
+    usuarios.cambiar_clave(db, u, "clave-nueva-larga-2")
+
+    assert auth.leer_token_reset(token, db) is None
+
+
+def test_un_token_de_reset_vencido_se_rechaza(db, monkeypatch):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    token = auth.crear_token_reset(u)
+
+    monkeypatch.setattr(auth, "RESET_MAX_AGE", -1)
+
+    assert auth.leer_token_reset(token, db) is None
+
+
+def test_una_cookie_de_sesion_no_sirve_como_token_de_reset(db):
+    """Salt distinto: un token no se puede usar en el otro flujo."""
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+
+    assert auth.leer_token_reset(auth.create_session_cookie(u), db) is None
+
+
+def test_un_token_de_reset_no_sirve_como_cookie_de_sesion(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    peticion = RequestFalso({auth.COOKIE_NAME: auth.crear_token_reset(u)})
+
+    assert auth.usuario_actual(peticion, db) is None
+
+
+def test_el_token_de_reset_de_una_cuenta_dada_de_baja_se_rechaza(db):
+    u = usuarios.crear(db, "contador@gridworks.cl", clave="clave-larga-1")
+    token = auth.crear_token_reset(u)
+
+    usuarios.desactivar(db, u)
+
+    assert auth.leer_token_reset(token, db) is None
+
+
+def test_el_token_de_reset_identifica_al_usuario_correcto_entre_varios(db):
+    a = usuarios.crear(db, "a@gridworks.cl", clave="clave-larga-1")
+    b = usuarios.crear(db, "b@gridworks.cl", clave="clave-larga-2")
+
+    assert auth.leer_token_reset(auth.crear_token_reset(a), db).email == "a@gridworks.cl"
+    assert auth.leer_token_reset(auth.crear_token_reset(b), db).email == "b@gridworks.cl"

@@ -10,6 +10,8 @@ from app.models import Usuario
 
 COOKIE_NAME = "session"
 MAX_AGE = 60 * 60 * 24 * 30  # 30 dias
+RESET_MAX_AGE = 60 * 30  # 30 minutos
+SALT_RESET = "reset-clave"
 
 _serializer = URLSafeTimedSerializer(SECRET_KEY)
 
@@ -20,17 +22,11 @@ def create_session_cookie(u: Usuario) -> str:
     return _serializer.dumps({"uid": u.id, "v": u.token_version})
 
 
-def usuario_actual(request: Request, db: Session):
-    """Usuario de la sesion, o None. Rechaza firma invalida, vencimiento,
-    usuario borrado, cuenta dada de baja y version desactualizada."""
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return None
-    try:
-        datos = _serializer.loads(token, max_age=MAX_AGE)
-    except BadData:
-        return None  # firma invalida, vencida, o payload corrupto
-
+def _usuario_de_payload(datos, db: Session):
+    """Reglas comunes para validar el payload {"uid", "v"} de un token
+    firmado, ya sea cookie de sesion o token de reset. Usado por
+    usuario_actual y leer_token_reset para que las reglas no se dupliquen
+    y puedan divergir con el tiempo."""
     # Se exige la forma exacta del payload. La cookie del formato viejo
     # ({"ok": true}) tampoco pasa por aqui: no trae uid ni v. Ojo con los
     # booleanos, que en Python y en SQL valen 1 y calzarian con el id 1.
@@ -55,6 +51,20 @@ def usuario_actual(request: Request, db: Session):
     return u
 
 
+def usuario_actual(request: Request, db: Session):
+    """Usuario de la sesion, o None. Rechaza firma invalida, vencimiento,
+    usuario borrado, cuenta dada de baja y version desactualizada."""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        datos = _serializer.loads(token, max_age=MAX_AGE)
+    except BadData:
+        return None  # firma invalida, vencida, o payload corrupto
+
+    return _usuario_de_payload(datos, db)
+
+
 def require_login(request: Request, db: Session = Depends(get_db)) -> Usuario:
     """Dependencia de FastAPI. Sin sesion valida manda al login: no hay ningun
     atajo que deje pasar sin autenticacion."""
@@ -62,3 +72,20 @@ def require_login(request: Request, db: Session = Depends(get_db)) -> Usuario:
     if u is None:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     return u
+
+
+def crear_token_reset(u: Usuario) -> str:
+    """Salt propio para que un token de recuperacion no sirva como cookie de
+    sesion ni al reves."""
+    return _serializer.dumps({"uid": u.id, "v": u.token_version}, salt=SALT_RESET)
+
+
+def leer_token_reset(token: str, db: Session):
+    """Usuario del token, o None. Que la version tenga que calzar hace que el
+    enlace sirva una sola vez: al cambiar la clave, sube y el token muere."""
+    try:
+        datos = _serializer.loads(token, max_age=RESET_MAX_AGE, salt=SALT_RESET)
+    except BadData:
+        return None  # firma invalida, vencido, corrupto, o de otro salt
+
+    return _usuario_de_payload(datos, db)
