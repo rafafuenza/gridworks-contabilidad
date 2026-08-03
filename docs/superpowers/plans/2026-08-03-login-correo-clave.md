@@ -1792,7 +1792,15 @@ def restablecer_submit(request: Request, token: str, password: str = Form(...),
             status_code=400,
         )
 
-    usuarios.cambiar_clave(db, u, password)
+    # cambiar_clave devuelve False si otra peticion redimio el mismo enlace
+    # primero. En ese caso el enlace ya no sirve y hay que decirlo, no fingir
+    # que se guardo.
+    if not usuarios.cambiar_clave(db, u, password):
+        return templates.TemplateResponse(
+            "restablecer.html",
+            {"request": request, "usuario": None, "invalido": True},
+            status_code=400,
+        )
     return RedirectResponse("/login", status_code=303)
 
 
@@ -1966,7 +1974,13 @@ def cuenta_submit(request: Request, actual: str = Form(...), password: str = For
             "cuenta.html", {"request": request, "usuario": usuario, "error": error}, status_code=400
         )
 
-    usuarios.cambiar_clave(db, usuario, password)
+    if not usuarios.cambiar_clave(db, usuario, password):
+        return templates.TemplateResponse(
+            "cuenta.html",
+            {"request": request, "usuario": usuario,
+             "error": "Tu clave cambio desde otra pestaña. Vuelve a intentarlo."},
+            status_code=409,
+        )
     # cambiar_clave subio token_version: hay que reemitir la cookie propia para
     # no quedar afuera junto con las sesiones de los otros dispositivos.
     resp = RedirectResponse("/cuenta?ok=1", status_code=303)
