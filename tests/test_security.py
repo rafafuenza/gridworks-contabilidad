@@ -4,7 +4,7 @@ import unicodedata
 from app.security import hash_password, verify_password, generar_clave_aleatoria
 
 
-def test_hash_y_verify_hacen_ida_y_vuelta():
+def test_hash_y_verify_hacen_ida_y_vuelta(hasheo_real):
     guardado = hash_password("clave-secreta-123")
 
     assert verify_password("clave-secreta-123", guardado) is True
@@ -35,7 +35,7 @@ def test_la_clave_aleatoria_tiene_largo_util():
     assert clave != generar_clave_aleatoria()
 
 
-def test_la_codificacion_es_la_que_decimos():
+def test_la_codificacion_es_la_que_decimos(hasheo_real):
     guardado = hash_password("x")
     partes = guardado.split("$")
 
@@ -62,11 +62,11 @@ def test_verify_rechaza_parametros_fuera_de_rango():
     assert verify_password("x", manipulado) is False
 
 
-def test_una_clave_vacia_hace_ida_y_vuelta():
+def test_una_clave_vacia_hace_ida_y_vuelta(hasheo_real):
     assert verify_password("", hash_password("")) is True
 
 
-def test_una_clave_con_tildes_hace_ida_y_vuelta_en_cualquier_forma_unicode():
+def test_una_clave_con_tildes_hace_ida_y_vuelta_en_cualquier_forma_unicode(hasheo_real):
     original = "clave-nñandú"
     nfc = unicodedata.normalize("NFC", original)
     nfd = unicodedata.normalize("NFD", original)

@@ -5,6 +5,31 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 
+import app.security
+
+# Las pruebas hashean decenas de veces y scrypt real cuesta ~600 ms por
+# llamada. Se baja el costo para la suite, no para produccion. El piso es
+# 2**12 porque verify_password rechaza cualquier n menor, asi que bajar mas
+# no acelera en silencio: rompe todas las pruebas de login de golpe.
+#
+# Esto debe correr antes de que se importe app.usuarios: ese modulo calcula
+# _HASH_DESCARTE con hash_password() al importarse, usando el _N vigente en
+# ese momento. Si el parche llegara despues de ese import, el hash de
+# descarte quedaria al costo de produccion y casi no se ahorraria nada.
+# conftest.py se importa antes que los modulos de prueba, asi que esto
+# corre a tiempo.
+N_PRODUCCION = app.security._N
+app.security._N = 2 ** 12
+
+
+@pytest.fixture
+def hasheo_real():
+    """Para las pruebas que necesitan probar el costo real de produccion:
+    el round-trip de hash/verify y la codificacion de los parametros."""
+    app.security._N = N_PRODUCCION
+    yield
+    app.security._N = 2 ** 12
+
 
 @pytest.fixture
 def db():
