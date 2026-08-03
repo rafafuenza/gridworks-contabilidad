@@ -219,11 +219,11 @@ import hmac
 import secrets
 
 _ALGORITMO = "scrypt"
-_N = 2 ** 14      # costo de CPU/memoria: ~16 MB por hasheo
+_N = 2 ** 16      # costo de CPU/memoria: 64 MB por hasheo (128*r*N)
 _R = 8
 _P = 1
 _DKLEN = 32
-_MAXMEM = 64 * 1024 * 1024  # holgura sobre los 16 MB que pide n=2**14
+_MAXMEM = 256 * 1024 * 1024  # holgura real sobre los 64 MB que pide n=2**16
 
 
 def hash_password(plain: str) -> str:
@@ -275,6 +275,18 @@ Expected: PASS, 4 passed.
 git add app/security.py tests/test_security.py
 git commit -m "feat: hasheo de claves con scrypt"
 ```
+
+> **Nota de ejecución (2026-08-03):** la revisión de calidad de esta tarea pidió
+> seis ajustes que se aplicaron en un commit aparte: subir `_N` a `2**16` con
+> `_MAXMEM` de 256 MB (el valor original de 64 MB habría hecho fallar cualquier
+> subida futura, porque `n=2**16` pide exactamente 64 MB), acotar los parámetros
+> `n`/`r`/`p` leídos del hash guardado para que una fila manipulada no provoque
+> una asignación enorme en cada intento de login, estrechar el `except` a solo
+> `ValueError`, renombrar `largo` a `n_bytes` (`token_urlsafe` recibe bytes, no
+> caracteres), normalizar a NFC antes de hashear y verificar — porque una clave
+> con tilde o eñe escrita desde otro sistema produce bytes distintos y el login
+> fallaría sin diagnóstico posible —, y sumar pruebas del formato del hash, del
+> algoritmo equivocado y de los parámetros fuera de rango.
 
 ---
 
