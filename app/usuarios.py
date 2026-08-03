@@ -114,3 +114,15 @@ def desactivar(db: Session, u: Usuario) -> None:
     u.activo = False
     u.token_version = (u.token_version or 1) + 1
     db.commit()
+
+
+def puede_enviar_reset(u: Usuario) -> bool:
+    """Un enlace de recuperacion cada RESET_ESPERA_MINUTOS por cuenta."""
+    if u.reset_enviado_en is None:
+        return True
+    return ahora_utc() - u.reset_enviado_en >= timedelta(minutes=RESET_ESPERA_MINUTOS)
+
+
+def marcar_reset_enviado(db: Session, u: Usuario) -> None:
+    u.reset_enviado_en = ahora_utc()
+    db.commit()

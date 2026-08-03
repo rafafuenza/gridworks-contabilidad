@@ -191,3 +191,23 @@ def test_desactivar_sube_la_version(db):
     usuarios.desactivar(db, u)
 
     assert u.token_version == version_inicial + 1
+
+
+def test_no_se_puede_pedir_dos_enlaces_seguidos(db):
+    """Sin esto, cualquiera que conozca el correo llena la bandeja y quema
+    la cuota SMTP de la cuenta de Gmail."""
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+
+    assert usuarios.puede_enviar_reset(u) is True
+    usuarios.marcar_reset_enviado(db, u)
+    assert usuarios.puede_enviar_reset(u) is False
+
+
+def test_el_freno_se_suelta_al_pasar_la_espera(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    usuarios.marcar_reset_enviado(db, u)
+
+    u.reset_enviado_en = ahora_utc() - timedelta(minutes=usuarios.RESET_ESPERA_MINUTOS, seconds=1)
+    db.commit()
+
+    assert usuarios.puede_enviar_reset(u) is True
