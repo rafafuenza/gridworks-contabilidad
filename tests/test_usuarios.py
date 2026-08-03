@@ -116,3 +116,70 @@ def test_el_bloqueo_no_se_pierde_con_intentos_en_paralelo(tmp_path):
     finally:
         sesion_verificacion.close()
         engine.dispose()
+
+
+from datetime import timedelta
+
+from app.models import ahora_utc
+
+
+def test_cinco_intentos_fallidos_bloquean_la_cuenta(db):
+    usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+
+    for _ in range(usuarios.MAX_INTENTOS):
+        resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "equivocada")
+        assert resultado is Resultado.CREDENCIALES_INVALIDAS
+
+    # La clave correcta tampoco entra mientras dure el bloqueo
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is Resultado.BLOQUEADO
+
+
+def test_el_bloqueo_se_suelta_cuando_vence(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    for _ in range(usuarios.MAX_INTENTOS):
+        usuarios.autenticar(db, "rafael@gridworks.cl", "equivocada")
+
+    u.bloqueado_hasta = ahora_utc() - timedelta(seconds=1)
+    db.commit()
+
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is Resultado.OK
+
+
+def test_entrar_bien_resetea_el_contador(db):
+    usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    for _ in range(usuarios.MAX_INTENTOS - 1):
+        usuarios.autenticar(db, "rafael@gridworks.cl", "equivocada")
+
+    usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    u = usuarios.por_email(db, "rafael@gridworks.cl")
+    assert u.intentos_fallidos == 0
+
+    # Y el contador parte de cero de nuevo, no queda a un paso del bloqueo
+    for _ in range(usuarios.MAX_INTENTOS - 1):
+        usuarios.autenticar(db, "rafael@gridworks.cl", "equivocada")
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is Resultado.OK
+
+
+def test_cambiar_la_clave_sube_la_version_y_suelta_el_bloqueo(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    version_inicial = u.token_version
+    for _ in range(usuarios.MAX_INTENTOS):
+        usuarios.autenticar(db, "rafael@gridworks.cl", "equivocada")
+
+    usuarios.cambiar_clave(db, u, "clave-nueva-larga-2")
+
+    assert u.token_version == version_inicial + 1
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-nueva-larga-2")
+    assert resultado is Resultado.OK
+
+
+def test_desactivar_sube_la_version(db):
+    u = usuarios.crear(db, "contador@gridworks.cl", clave="clave-larga-1")
+    version_inicial = u.token_version
+
+    usuarios.desactivar(db, u)
+
+    assert u.token_version == version_inicial + 1
