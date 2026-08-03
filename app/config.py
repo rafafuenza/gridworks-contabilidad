@@ -25,15 +25,17 @@ GMAIL_DECLARED_LABEL = os.environ.get(
 # A quien se le avisa por correo cuando se acepta un lote (compras declaradas)
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "contabilidad@gridworks.cl")
 
-# Sin default a proposito: con una clave conocida cualquiera puede fabricarse
-# una cookie de sesion valida y entrar como cualquier usuario. Es preferible
-# que la aplicacion no arranque a que arranque abierta.
+# Sin default a proposito: con una clave conocida o adivinable cualquiera puede
+# fabricarse una cookie de sesion valida y entrar como cualquier usuario. Se
+# exige largo minimo porque una frase legible, aunque sea larga, tiene poca
+# entropia real; una clave generada al azar pasa este piso de sobra.
+LARGO_MINIMO_SECRET_KEY = 32
+
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
-if not SECRET_KEY or SECRET_KEY == "dev-secret-change-me":
+if len(SECRET_KEY) < LARGO_MINIMO_SECRET_KEY or SECRET_KEY == "dev-secret-change-me":
     raise RuntimeError(
-        "Falta SECRET_KEY o quedo el valor de ejemplo. Genera una con "
-        "'python -c \"import secrets; print(secrets.token_urlsafe(32))\"' "
-        "y ponla en el entorno (o en el .env local)."
+        "SECRET_KEY falta, es la de ejemplo, o es demasiado corta. "
+        "Generala con: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
     )
 # En produccion (HTTPS, ej. Railway) poner COOKIE_SECURE=true para que la cookie
 # de sesion nunca viaje en claro. En local (http) dejar sin setear.

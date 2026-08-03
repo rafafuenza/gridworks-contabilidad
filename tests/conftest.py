@@ -2,7 +2,7 @@ import os
 
 # Debe ir antes de importar cualquier cosa de app: config.py se niega a cargar
 # sin SECRET_KEY, y no queremos que la suite dependa del .env de la maquina.
-os.environ.setdefault("SECRET_KEY", "clave-solo-para-pruebas")
+os.environ.setdefault("SECRET_KEY", "clave-solo-para-pruebas-con-largo-suficiente-abcdefgh")
 
 import pytest
 from sqlalchemy import create_engine

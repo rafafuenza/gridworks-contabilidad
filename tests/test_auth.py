@@ -101,10 +101,20 @@ def test_la_cookie_vieja_de_clave_compartida_se_rechaza(db):
     assert auth.usuario_actual(peticion, db) is None
 
 
-def test_sin_secret_key_o_con_el_valor_de_ejemplo_no_arranca(monkeypatch):
-    """SECRET_KEY es obligatoria y no puede quedar en el valor de ejemplo:
-    con una clave conocida cualquiera se fabrica una cookie de sesion valida."""
-    monkeypatch.setenv("SECRET_KEY", "dev-secret-change-me")
+@pytest.mark.parametrize(
+    "valor",
+    [
+        "",  # falta
+        "dev-secret-change-me",  # la de ejemplo
+        "corta-pero-no-es-la-de-ejemplo",  # 31 caracteres: bajo el piso
+    ],
+)
+def test_secret_key_invalida_no_arranca(monkeypatch, valor):
+    """SECRET_KEY es obligatoria, no puede quedar en el valor de ejemplo, y no
+    puede ser una frase corta: con una clave adivinable cualquiera se fabrica
+    una cookie de sesion valida."""
+    assert len(valor) < config_module.LARGO_MINIMO_SECRET_KEY or valor == "dev-secret-change-me"
+    monkeypatch.setenv("SECRET_KEY", valor)
     try:
         with pytest.raises(RuntimeError):
             importlib.reload(config_module)
