@@ -55,6 +55,10 @@ def autenticar(db: Session, email: str, clave: str):
         verify_password(clave, _HASH_DESCARTE)  # gasta el mismo tiempo a proposito
         return Resultado.CREDENCIALES_INVALIDAS, None
 
+    # Responde rapido, sin hashear, cuando la cuenta ya esta bloqueada. Es a
+    # proposito: hashear en este camino le regalaria a quien ataca 650 ms y
+    # 64 MB de trabajo por cada request ya bloqueado, lo que es peor que la
+    # fuga de informacion (que una cuenta bloqueada existe, tras 5 intentos).
     if u.bloqueado_hasta and u.bloqueado_hasta > ahora_utc():
         return Resultado.BLOQUEADO, None
 
@@ -75,11 +79,19 @@ def autenticar(db: Session, email: str, clave: str):
 
 
 def _registrar_intento_fallido(db: Session, u: Usuario) -> None:
-    u.intentos_fallidos = (u.intentos_fallidos or 0) + 1
+    """El incremento va en la base y no en Python: entre que se leyo el usuario
+    y se escribe pasan ~650 ms hasheando, y varios intentos en paralelo leerian
+    todos el mismo valor viejo y se pisarian, dejando el bloqueo sin efecto."""
+    db.query(Usuario).filter(Usuario.id == u.id).update(
+        {Usuario.intentos_fallidos: Usuario.intentos_fallidos + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    db.refresh(u)
     if u.intentos_fallidos >= MAX_INTENTOS:
         u.bloqueado_hasta = ahora_utc() + timedelta(minutes=BLOQUEO_MINUTOS)
         u.intentos_fallidos = 0
-    db.commit()
+        db.commit()
 
 
 def cambiar_clave(db: Session, u: Usuario, nueva: str) -> None:

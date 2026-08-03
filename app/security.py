@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import threading
 import unicodedata
 
 _ALGORITMO = "scrypt"
@@ -19,14 +20,20 @@ _MAXMEM = 256 * 1024 * 1024  # holgura real sobre los 64 MB que pide n=2**16
 # no usamos 2**17 (128 MB/hash, el piso de OWASP): esto corre en un contenedor
 # chico de Railway para 2-3 usuarios, y 64 MB es el punto mas seguro ahi
 
+# scrypt pide 64 MB por hasheo. Sin este tope, un punado de intentos de login
+# en paralelo bastaria para voltear el contenedor por memoria.
+_MAX_HASHEOS_EN_PARALELO = 2
+_semaforo = threading.Semaphore(_MAX_HASHEOS_EN_PARALELO)
+
 
 def hash_password(plain: str) -> str:
     """Devuelve 'scrypt$n$r$p$salt_b64$hash_b64'. El formato lleva sus propios
     parametros para poder subirlos mas adelante sin invalidar los hashes viejos."""
     plain = unicodedata.normalize("NFC", plain)
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(plain.encode("utf-8"), salt=salt, n=_N, r=_R, p=_P,
-                        dklen=_DKLEN, maxmem=_MAXMEM)
+    with _semaforo:
+        dk = hashlib.scrypt(plain.encode("utf-8"), salt=salt, n=_N, r=_R, p=_P,
+                            dklen=_DKLEN, maxmem=_MAXMEM)
     return "$".join([
         _ALGORITMO, str(_N), str(_R), str(_P),
         base64.b64encode(salt).decode("ascii"),
@@ -52,8 +59,9 @@ def verify_password(plain: str, guardado: str) -> bool:
         if not (2 ** 12 <= n <= 2 ** 17 and 1 <= r <= 16 and 1 <= p <= 4 and len(esperado) == _DKLEN):
             return False
         plain = unicodedata.normalize("NFC", plain)
-        dk = hashlib.scrypt(plain.encode("utf-8"), salt=salt, n=n, r=r,
-                            p=p, dklen=len(esperado), maxmem=_MAXMEM)
+        with _semaforo:
+            dk = hashlib.scrypt(plain.encode("utf-8"), salt=salt, n=n, r=r,
+                                p=p, dklen=len(esperado), maxmem=_MAXMEM)
     except ValueError:
         return False
     return hmac.compare_digest(dk, esperado)

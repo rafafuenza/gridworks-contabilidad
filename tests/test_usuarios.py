@@ -1,4 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from app import usuarios
+from app.db import Base
 from app.usuarios import Resultado
 
 
@@ -56,3 +63,58 @@ def test_crear_sin_clave_genera_una_al_azar(db):
     u = usuarios.crear(db, "contador@gridworks.cl")
 
     assert u.password_hash
+
+
+def test_cambiar_clave_revoca_la_anterior_y_habilita_la_nueva(db):
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-vieja-1")
+
+    usuarios.cambiar_clave(db, u, "clave-nueva-1")
+
+    resultado_vieja, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-vieja-1")
+    resultado_nueva, u2 = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-nueva-1")
+
+    assert resultado_vieja is Resultado.CREDENCIALES_INVALIDAS
+    assert resultado_nueva is Resultado.OK
+    assert u2.email == "rafael@gridworks.cl"
+
+
+def test_el_bloqueo_no_se_pierde_con_intentos_en_paralelo():
+    """_registrar_intento_fallido incrementa con una version no atomica
+    (leer en Python, sumar 1, escribir): como verify_password tarda ~650 ms,
+    varios intentos fallidos simultaneos leerian todos el mismo valor viejo
+    y se pisarian al escribir, dejando el contador en 1 para siempre y la
+    cuenta jamas se bloquea. El fixture db no sirve aqui porque entrega una
+    sola Session; se arma un engine propio (mismo patron StaticPool que
+    tests/conftest.py) para abrir una Session nueva por hilo contra la misma
+    base en memoria, como pasaria con Sessions reales por-request en FastAPI."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    sesion_inicial = Session()
+    usuarios.crear(sesion_inicial, "concurrencia@gridworks.cl", clave="clave-larga-1")
+    sesion_inicial.close()
+
+    def intento_fallido(_):
+        sesion = Session()
+        try:
+            resultado, _ = usuarios.autenticar(sesion, "concurrencia@gridworks.cl", "clave-mala")
+            return resultado
+        finally:
+            sesion.close()
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(intento_fallido, range(8)))
+
+    sesion_verificacion = Session()
+    try:
+        u = usuarios.por_email(sesion_verificacion, "concurrencia@gridworks.cl")
+        # con el bug, esto queda en None porque el contador nunca supera 1
+        assert u.bloqueado_hasta is not None
+    finally:
+        sesion_verificacion.close()
+        engine.dispose()
