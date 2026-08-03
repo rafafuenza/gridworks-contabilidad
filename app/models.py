@@ -71,7 +71,11 @@ class Purchase(Base):
 
 class Usuario(Base):
     """Cuenta de acceso a la aplicacion. Todas las cuentas tienen los mismos
-    permisos: no hay campo de rol."""
+    permisos: no hay campo de rol.
+
+    Todas las fechas de esta tabla son UTC naive, escritas con ahora_utc().
+    Nunca compararlas contra Purchase.creado_en ni Proveedor.creado_en, que
+    llevan zona horaria: mezclar los dos tipos lanza TypeError."""
     __tablename__ = "usuarios"
 
     id = Column(Integer, primary_key=True)
