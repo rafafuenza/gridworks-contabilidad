@@ -2,9 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app import usuarios
+from app import models  # noqa: F401  (registra los modelos en Base)
 from app.db import Base
 from app.usuarios import Resultado
 
@@ -78,20 +78,18 @@ def test_cambiar_clave_revoca_la_anterior_y_habilita_la_nueva(db):
     assert u2.email == "rafael@gridworks.cl"
 
 
-def test_el_bloqueo_no_se_pierde_con_intentos_en_paralelo():
+def test_el_bloqueo_no_se_pierde_con_intentos_en_paralelo(tmp_path):
     """_registrar_intento_fallido incrementa con una version no atomica
     (leer en Python, sumar 1, escribir): como verify_password tarda ~650 ms,
     varios intentos fallidos simultaneos leerian todos el mismo valor viejo
     y se pisarian al escribir, dejando el contador en 1 para siempre y la
     cuenta jamas se bloquea. El fixture db no sirve aqui porque entrega una
-    sola Session; se arma un engine propio (mismo patron StaticPool que
-    tests/conftest.py) para abrir una Session nueva por hilo contra la misma
-    base en memoria, como pasaria con Sessions reales por-request en FastAPI."""
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    sola Session; se arma un engine propio contra un archivo SQLite real
+    (no StaticPool: eso comparte una sola conexion entre los 8 hilos, y
+    sqlite3 no soporta cursor.execute concurrente sobre una misma conexion
+    aunque se pase check_same_thread=False) para que cada hilo abra su propia
+    conexion, como pasaria con Sessions reales por-request en FastAPI."""
+    engine = create_engine(f"sqlite:///{tmp_path}/concurrencia.db")
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

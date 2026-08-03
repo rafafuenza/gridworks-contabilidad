@@ -22,6 +22,13 @@ _MAXMEM = 256 * 1024 * 1024  # holgura real sobre los 64 MB que pide n=2**16
 
 # scrypt pide 64 MB por hasheo. Sin este tope, un punado de intentos de login
 # en paralelo bastaria para voltear el contenedor por memoria.
+#
+# Sin plazo a proposito: un aumento repentino de intentos de login puede dejar
+# hilos del pool compartido de FastAPI esperando un permiso, pero la espera
+# esta acotada porque cada permiso se retiene solo mientras dura un hasheo
+# (~650 ms). Encolar esos hilos es el costo que se acepta a cambio de no
+# quedarse sin memoria; no se agrega plazo de espera ni una respuesta de
+# "ocupado", son mecanismos que esta app no necesita.
 _MAX_HASHEOS_EN_PARALELO = 2
 _semaforo = threading.Semaphore(_MAX_HASHEOS_EN_PARALELO)
 

@@ -59,6 +59,12 @@ def autenticar(db: Session, email: str, clave: str):
     # proposito: hashear en este camino le regalaria a quien ataca 650 ms y
     # 64 MB de trabajo por cada request ya bloqueado, lo que es peor que la
     # fuga de informacion (que una cuenta bloqueada existe, tras 5 intentos).
+    # El semaforo de app/security.py agranda esta brecha bajo carga: los dos
+    # caminos que si hashean (correo inexistente y clave mala) siguen tardando
+    # lo mismo entre si porque ambos esperan el mismo permiso, pero el camino
+    # BLOQUEADO no pide permiso y responde de inmediato, asi que con el
+    # semaforo ocupado la diferencia pasa de ~650 ms a varios segundos. Se
+    # acepta: no hashear en este camino sigue siendo la opcion correcta.
     if u.bloqueado_hasta and u.bloqueado_hasta > ahora_utc():
         return Resultado.BLOQUEADO, None
 
