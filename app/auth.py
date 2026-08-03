@@ -1,7 +1,7 @@
 """Sesion y guardas de ruta. Todo lo que es token firmado vive aqui."""
 
 from fastapi import Request, HTTPException, Depends
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from itsdangerous import URLSafeTimedSerializer, BadData
 from sqlalchemy.orm import Session
 
 from app.config import SECRET_KEY
@@ -28,15 +28,25 @@ def usuario_actual(request: Request, db: Session):
         return None
     try:
         datos = _serializer.loads(token, max_age=MAX_AGE)
-    except (BadSignature, SignatureExpired):
-        return None
-    if not isinstance(datos, dict):
-        return None  # cookie del formato viejo ({"ok": true})
+    except BadData:
+        return None  # firma invalida, vencida, o payload corrupto
 
-    u = db.query(Usuario).filter(Usuario.id == datos.get("uid")).first()
+    # Se exige la forma exacta del payload. La cookie del formato viejo
+    # ({"ok": true}) tampoco pasa por aqui: no trae uid ni v. Ojo con los
+    # booleanos, que en Python y en SQL valen 1 y calzarian con el id 1.
+    if not isinstance(datos, dict):
+        return None
+    uid = datos.get("uid")
+    version = datos.get("v")
+    if not isinstance(uid, int) or isinstance(uid, bool):
+        return None
+    if not isinstance(version, int) or isinstance(version, bool):
+        return None
+
+    u = db.query(Usuario).filter(Usuario.id == uid).first()
     if u is None or not u.activo:
         return None
-    if datos.get("v") != u.token_version:
+    if version != u.token_version:
         return None
     return u
 
