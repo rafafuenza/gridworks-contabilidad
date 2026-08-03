@@ -48,7 +48,12 @@ def test_verify_rechaza_un_algoritmo_distinto():
     assert verify_password("x", "bcrypt$65536$8$1$AAAA$AAAA") is False
 
 
-def test_verify_rechaza_parametros_fuera_de_rango_sin_asignar_memoria():
+# el whitelist existe para acotar el trabajo que puede provocar una fila
+# manipulada, pero hashlib.scrypt ya rechaza los casos extremos por su
+# propio chequeo de maxmem, y ninguna aseveracion booleana puede ver la
+# diferencia entre "rechazado por el whitelist" y "calculado y no coincidio".
+# esta prueba cubre el resultado, no el corte anticipado.
+def test_verify_rechaza_parametros_fuera_de_rango():
     guardado = hash_password("x")
     partes = guardado.split("$")
     partes[1] = str(2 ** 20)
