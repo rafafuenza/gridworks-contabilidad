@@ -556,11 +556,19 @@ def autenticar(db: Session, email: str, clave: str):
 
 
 def _registrar_intento_fallido(db: Session, u: Usuario) -> None:
-    u.intentos_fallidos = (u.intentos_fallidos or 0) + 1
+    """El incremento va en la base y no en Python: entre que se leyo el usuario
+    y se escribe pasan ~650 ms hasheando, y varios intentos en paralelo leerian
+    todos el mismo valor viejo y se pisarian, dejando el bloqueo sin efecto."""
+    db.query(Usuario).filter(Usuario.id == u.id).update(
+        {Usuario.intentos_fallidos: Usuario.intentos_fallidos + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    db.refresh(u)
     if u.intentos_fallidos >= MAX_INTENTOS:
         u.bloqueado_hasta = ahora_utc() + timedelta(minutes=BLOQUEO_MINUTOS)
         u.intentos_fallidos = 0
-    db.commit()
+        db.commit()
 
 
 def cambiar_clave(db: Session, u: Usuario, nueva: str) -> None:
@@ -593,6 +601,25 @@ Expected: PASS, 7 passed.
 git add app/usuarios.py tests/test_usuarios.py
 git commit -m "feat: crear y autenticar usuarios"
 ```
+
+> **Nota de ejecución (2026-08-03):** la revisión de calidad encontró que el
+> bloqueo, tal como estaba escrito arriba originalmente, no servía. El contador
+> se leía en Python y se reescribía como valor absoluto; entre la lectura y la
+> escritura pasan ~650 ms hasheando, y FastAPI atiende las rutas síncronas en un
+> pool de 40 hilos, así que 40 intentos simultáneos leían todos `0` y escribían
+> todos `1` — 40 pruebas costaban un solo incremento, repetible sin límite. El
+> código de arriba ya está corregido con el incremento atómico en la base.
+>
+> De ahí salieron otros tres cambios: un tope de dos hasheos simultáneos en
+> `app/security.py` (cada hasheo pide 64 MB y el camino de "correo no existe"
+> también hashea, así que sin tope un puñado de intentos voltea el contenedor);
+> una prueba de concurrencia con 8 hilos, que usa una base SQLite en archivo y
+> no `StaticPool` — con `StaticPool` los 8 hilos comparten una sola conexión
+> sqlite3 y la prueba falla sola de forma intermitente; y comentarios que dejan
+> por escrito que el camino de cuenta bloqueada responde rápido a propósito.
+>
+> El arreglo se verificó revirtiéndolo: 11 de 11 corridas verdes con el
+> incremento atómico, 3 de 3 rojas sin él.
 
 ---
 
