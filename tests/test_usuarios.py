@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -193,21 +194,101 @@ def test_desactivar_sube_la_version(db):
     assert u.token_version == version_inicial + 1
 
 
-def test_no_se_puede_pedir_dos_enlaces_seguidos(db):
+def test_solo_un_enlace_por_turno(db):
     """Sin esto, cualquiera que conozca el correo llena la bandeja y quema
     la cuota SMTP de la cuenta de Gmail."""
     u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
 
-    assert usuarios.puede_enviar_reset(u) is True
-    usuarios.marcar_reset_enviado(db, u)
-    assert usuarios.puede_enviar_reset(u) is False
+    assert usuarios.reclamar_envio_reset(db, u) is True
+    assert usuarios.reclamar_envio_reset(db, u) is False
 
 
-def test_el_freno_se_suelta_al_pasar_la_espera(db):
+def test_el_turno_se_suelta_al_pasar_la_espera(db):
     u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
-    usuarios.marcar_reset_enviado(db, u)
+    assert usuarios.reclamar_envio_reset(db, u) is True
 
     u.reset_enviado_en = ahora_utc() - timedelta(minutes=usuarios.RESET_ESPERA_MINUTOS, seconds=1)
     db.commit()
 
-    assert usuarios.puede_enviar_reset(u) is True
+    assert usuarios.reclamar_envio_reset(db, u) is True
+
+
+def test_el_turno_no_se_suelta_antes_de_tiempo(db):
+    """Confirma la duracion real de la espera: un mutante que la redujera a
+    segundos pasaria las demas pruebas de todos modos si esta no existe."""
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    assert usuarios.reclamar_envio_reset(db, u) is True
+
+    u.reset_enviado_en = ahora_utc() - timedelta(minutes=usuarios.RESET_ESPERA_MINUTOS - 1)
+    db.commit()
+
+    assert usuarios.reclamar_envio_reset(db, u) is False
+
+
+def test_reclamar_envio_reset_persiste(tmp_path):
+    """Confirma que el turno queda escrito en la base y no solo en el objeto
+    en memoria: si se borrara el db.commit() esto no se notaria usando la
+    misma Session en la que se hizo el reclamo."""
+    engine = create_engine(f"sqlite:///{tmp_path}/persistencia.db")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    sesion_creacion = Session()
+    usuarios.crear(sesion_creacion, "rafael@gridworks.cl", clave="clave-larga-1")
+    sesion_creacion.close()
+
+    sesion_reclamo = Session()
+    try:
+        u = usuarios.por_email(sesion_reclamo, "rafael@gridworks.cl")
+        assert usuarios.reclamar_envio_reset(sesion_reclamo, u) is True
+    finally:
+        sesion_reclamo.close()
+
+    sesion_verificacion = Session()
+    try:
+        u2 = usuarios.por_email(sesion_verificacion, "rafael@gridworks.cl")
+        assert u2.reset_enviado_en is not None
+    finally:
+        sesion_verificacion.close()
+        engine.dispose()
+
+
+def test_el_turno_es_atomico_bajo_concurrencia(tmp_path):
+    """Igual que test_el_bloqueo_no_se_pierde_con_intentos_en_paralelo: el
+    chequeo y la marca van en un solo UPDATE condicional para que varios
+    pedidos simultaneos por la misma cuenta no lean todos el mismo valor
+    viejo y ganen todos el turno. Se usa un archivo SQLite real (no
+    StaticPool) para que cada hilo abra su propia conexion, como pasaria
+    con Sessions reales por-request en FastAPI.
+
+    Los hilos se sueltan juntos con un Barrier justo despues de leer al
+    usuario: sin eso, la lectura y la escritura de un candidato read-then-write
+    a veces alcanzan a serializarse por casualidad (se probo a mano: sin
+    Barrier una version con el bug de todos modos ganaba el turno una sola
+    vez en la mayoria de las corridas, lo que habria dejado pasar la
+    regresion). Con el Barrier la ganada multiple queda garantizada contra
+    una version con el bug."""
+    engine = create_engine(f"sqlite:///{tmp_path}/concurrencia_reset.db")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    sesion_inicial = Session()
+    usuarios.crear(sesion_inicial, "concurrencia@gridworks.cl", clave="clave-larga-1")
+    sesion_inicial.close()
+
+    NUM_HILOS = 8
+    barrera = Barrier(NUM_HILOS)
+
+    def reclamo(_):
+        sesion = Session()
+        try:
+            u = usuarios.por_email(sesion, "concurrencia@gridworks.cl")
+            barrera.wait()
+            return usuarios.reclamar_envio_reset(sesion, u)
+        finally:
+            sesion.close()
+
+    with ThreadPoolExecutor(max_workers=NUM_HILOS) as ex:
+        resultados = list(ex.map(reclamo, range(NUM_HILOS)))
+
+    assert resultados.count(True) == 1

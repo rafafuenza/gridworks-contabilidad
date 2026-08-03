@@ -4,6 +4,7 @@ HTTP: la capa web decide que hacer con los resultados que devuelve."""
 from datetime import timedelta
 from enum import Enum
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import Usuario, ahora_utc
@@ -102,7 +103,8 @@ def _registrar_intento_fallido(db: Session, u: Usuario) -> None:
 
 def cambiar_clave(db: Session, u: Usuario, nueva: str) -> None:
     """Sube token_version: mata el enlace de recuperacion usado y cierra
-    cualquier sesion abierta de esta cuenta."""
+    cualquier sesion abierta de esta cuenta. reset_enviado_en se deja tal
+    cual a proposito: no es necesario limpiarlo para que el freno funcione."""
     u.password_hash = hash_password(nueva)
     u.token_version = (u.token_version or 1) + 1
     u.intentos_fallidos = 0
@@ -116,13 +118,24 @@ def desactivar(db: Session, u: Usuario) -> None:
     db.commit()
 
 
-def puede_enviar_reset(u: Usuario) -> bool:
-    """Un enlace de recuperacion cada RESET_ESPERA_MINUTOS por cuenta."""
-    if u.reset_enviado_en is None:
-        return True
-    return ahora_utc() - u.reset_enviado_en >= timedelta(minutes=RESET_ESPERA_MINUTOS)
+def reclamar_envio_reset(db: Session, u: Usuario) -> bool:
+    """Toma el turno para enviarle un enlace a esta cuenta. Devuelve True solo
+    si esta llamada gano el turno; el que pierde no debe enviar nada.
 
-
-def marcar_reset_enviado(db: Session, u: Usuario) -> None:
-    u.reset_enviado_en = ahora_utc()
+    El chequeo y la marca van en un solo UPDATE condicional a proposito: si se
+    consultara primero y se marcara despues, varios pedidos en paralelo leerian
+    todos el mismo valor viejo y saldrian todos los correos. Ademas se marca
+    antes de enviar, no despues: si el SMTP falla, es preferible que la persona
+    espere el turno a que el freno desaparezca justo cuando el correo anda mal."""
+    limite = ahora_utc() - timedelta(minutes=RESET_ESPERA_MINUTOS)
+    filas = (
+        db.query(Usuario)
+        .filter(
+            Usuario.id == u.id,
+            or_(Usuario.reset_enviado_en.is_(None), Usuario.reset_enviado_en <= limite),
+        )
+        .update({Usuario.reset_enviado_en: ahora_utc()}, synchronize_session=False)
+    )
     db.commit()
+    db.refresh(u)
+    return filas == 1
