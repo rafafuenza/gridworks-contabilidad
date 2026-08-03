@@ -292,3 +292,73 @@ def test_el_turno_es_atomico_bajo_concurrencia(tmp_path):
         resultados = list(ex.map(reclamo, range(NUM_HILOS)))
 
     assert resultados.count(True) == 1
+
+
+def test_cambiar_clave_es_atomica_bajo_redenciones_concurrentes(tmp_path):
+    """Dos redenciones del MISMO enlace de recuperacion en paralelo (misma
+    version leida) deben terminar en un solo cambio de clave exitoso. Sin el
+    UPDATE condicional, la version anterior de cambiar_clave era un
+    read-modify-write en Python (igual que el bug de _registrar_intento_fallido
+    y de reclamar_envio_reset, ya corregidos): las dos redenciones pasarian, y
+    ganaria la clave de quien commiteara al final, sin que el llamador tuviera
+    forma de saber cual gano. Con el UPDATE condicional a la version leida,
+    solo la primera en comprometerse en la base gana; la otra encuentra la
+    version ya movida y su UPDATE afecta cero filas.
+
+    Mismo patron que test_el_turno_es_atomico_bajo_concurrencia: archivo
+    SQLite real (no StaticPool) para que cada hilo tenga su propia conexion,
+    y un Barrier para que las dos lecturas ocurran antes que cualquier
+    escritura, en vez de confiar en que el intercalado ocurra por casualidad."""
+    engine = create_engine(f"sqlite:///{tmp_path}/concurrencia_clave.db")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    sesion_inicial = Session()
+    usuarios.crear(sesion_inicial, "concurrencia@gridworks.cl", clave="clave-original-1")
+    sesion_inicial.close()
+
+    NUM_HILOS = 2
+    barrera = Barrier(NUM_HILOS)
+
+    def clave_candidata(i):
+        return f"clave-candidata-{i}-larga"
+
+    def redencion(i):
+        sesion = Session()
+        try:
+            u = usuarios.por_email(sesion, "concurrencia@gridworks.cl")
+            barrera.wait()
+            return usuarios.cambiar_clave(sesion, u, clave_candidata(i))
+        finally:
+            sesion.close()
+
+    with ThreadPoolExecutor(max_workers=NUM_HILOS) as ex:
+        resultados = list(ex.map(redencion, range(NUM_HILOS)))
+
+    # Gana exactamente una redencion, nunca las dos ni ninguna.
+    assert resultados.count(True) == 1
+    ganador = resultados.index(True)
+    perdedor = 1 - ganador
+
+    sesion_verificacion = Session()
+    try:
+        u = usuarios.por_email(sesion_verificacion, "concurrencia@gridworks.cl")
+        # La version sube una sola vez (1 -> 2), no dos: sin el UPDATE
+        # condicional ambos hilos leen version 1 y ambos escriben 1+1=2.
+        assert u.token_version == 2
+
+        # El retorno True dice la verdad sobre que clave quedo activa: no
+        # basta con que la ultima escritura gane en la base, el llamador
+        # tiene que poder confiar en el valor que le devolvio la funcion.
+        resultado_ganador, _ = usuarios.autenticar(
+            sesion_verificacion, "concurrencia@gridworks.cl", clave_candidata(ganador)
+        )
+        assert resultado_ganador is Resultado.OK
+
+        resultado_perdedor, _ = usuarios.autenticar(
+            sesion_verificacion, "concurrencia@gridworks.cl", clave_candidata(perdedor)
+        )
+        assert resultado_perdedor is not Resultado.OK
+    finally:
+        sesion_verificacion.close()
+        engine.dispose()

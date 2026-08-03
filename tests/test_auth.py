@@ -183,3 +183,33 @@ def test_el_token_de_reset_identifica_al_usuario_correcto_entre_varios(db):
 
     assert auth.leer_token_reset(auth.crear_token_reset(a), db).email == "a@gridworks.cl"
     assert auth.leer_token_reset(auth.crear_token_reset(b), db).email == "b@gridworks.cl"
+
+
+def test_el_token_de_reset_lleva_la_version_real_no_una_fija(db):
+    """Todo usuario recien creado parte con token_version == 1, asi que un
+    crear_token_reset que hardcodeara "v": 1 pasaria las demas pruebas sin
+    que nadie lo note. Este cambia la clave PRIMERO (la version queda en 2)
+    y recien ahi emite el token: si la version fuera fija, el enlace
+    quedaria muerto para siempre despues del primer cambio de clave."""
+    u = usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    usuarios.cambiar_clave(db, u, "clave-intermedia-larga-2")
+    assert u.token_version == 2
+
+    token = auth.crear_token_reset(u)
+
+    assert auth.leer_token_reset(token, db) is not None
+
+
+def test_reset_max_age_es_treinta_minutos(db):
+    """Pin de la politica, no del detalle de implementacion: la prueba de
+    vencimiento monkeypatchea el valor, asi que nada mas deja constancia de
+    cuanto dura realmente un enlace de recuperacion."""
+    assert auth.RESET_MAX_AGE == 60 * 30
+
+
+def test_usuario_de_payload_rechaza_un_payload_que_no_es_diccionario(db):
+    """_usuario_de_payload protege ambos flujos (cookie y token de reset) pero
+    ninguna de las dos funciones publicas deja pasar un payload que no sea
+    dict antes de llegar a ella (itsdangerous solo entrega lo que el propio
+    dumps() serializo). Se prueba directo para que la guarda quede cubierta."""
+    assert auth._usuario_de_payload(["no", "es", "un", "dict"], db) is None

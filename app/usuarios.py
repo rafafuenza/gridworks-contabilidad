@@ -101,15 +101,32 @@ def _registrar_intento_fallido(db: Session, u: Usuario) -> None:
         db.commit()
 
 
-def cambiar_clave(db: Session, u: Usuario, nueva: str) -> None:
-    """Sube token_version: mata el enlace de recuperacion usado y cierra
-    cualquier sesion abierta de esta cuenta. reset_enviado_en se deja tal
-    cual a proposito: no es necesario limpiarlo para que el freno funcione."""
-    u.password_hash = hash_password(nueva)
-    u.token_version = (u.token_version or 1) + 1
-    u.intentos_fallidos = 0
-    u.bloqueado_hasta = None
+def cambiar_clave(db: Session, u: Usuario, nueva: str) -> bool:
+    """Cambia la clave y sube token_version, lo que mata el enlace de
+    recuperacion usado y cierra las sesiones abiertas de esta cuenta.
+
+    Devuelve False si otra peticion se adelanto con el mismo enlace. El UPDATE
+    es condicional a la version que se leyo: sin eso, dos redenciones del mismo
+    token en paralelo pasarian las dos y ganaria la ultima en escribir.
+    reset_enviado_en se deja tal cual a proposito: no es necesario limpiarlo
+    para que el freno funcione."""
+    version_leida = u.token_version
+    filas = (
+        db.query(Usuario)
+        .filter(Usuario.id == u.id, Usuario.token_version == version_leida)
+        .update(
+            {
+                Usuario.password_hash: hash_password(nueva),
+                Usuario.token_version: version_leida + 1,
+                Usuario.intentos_fallidos: 0,
+                Usuario.bloqueado_hasta: None,
+            },
+            synchronize_session=False,
+        )
+    )
     db.commit()
+    db.refresh(u)
+    return filas == 1
 
 
 def desactivar(db: Session, u: Usuario) -> None:

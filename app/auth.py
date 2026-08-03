@@ -11,6 +11,7 @@ from app.models import Usuario
 COOKIE_NAME = "session"
 MAX_AGE = 60 * 60 * 24 * 30  # 30 dias
 RESET_MAX_AGE = 60 * 30  # 30 minutos
+SALT_SESION = "sesion"
 SALT_RESET = "reset-clave"
 
 _serializer = URLSafeTimedSerializer(SECRET_KEY)
@@ -18,8 +19,10 @@ _serializer = URLSafeTimedSerializer(SECRET_KEY)
 
 def create_session_cookie(u: Usuario) -> str:
     """El payload lleva la version del usuario: cuando esa version sube en la
-    base, esta cookie deja de validar sin necesidad de tabla de sesiones."""
-    return _serializer.dumps({"uid": u.id, "v": u.token_version})
+    base, esta cookie deja de validar sin necesidad de tabla de sesiones. Todo
+    dumps() nombra su salt: asi un tercer tipo de token que se agregue mas
+    adelante sin salt propio no queda intercambiable con este por descuido."""
+    return _serializer.dumps({"uid": u.id, "v": u.token_version}, salt=SALT_SESION)
 
 
 def _usuario_de_payload(datos, db: Session):
@@ -58,7 +61,7 @@ def usuario_actual(request: Request, db: Session):
     if not token:
         return None
     try:
-        datos = _serializer.loads(token, max_age=MAX_AGE)
+        datos = _serializer.loads(token, max_age=MAX_AGE, salt=SALT_SESION)
     except BadData:
         return None  # firma invalida, vencida, o payload corrupto
 
