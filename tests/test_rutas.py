@@ -479,3 +479,149 @@ def test_cuenta_claves_nuevas_no_coinciden_no_cambia_nada(client, db, usuario):
     assert "no coinciden" in resp.text
     resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
     assert resultado is usuarios.Resultado.OK
+
+
+# --- Administracion de usuarios (/usuarios) ---
+
+def _con_sesion(client, usuario):
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+    return client
+
+
+def test_usuarios_sin_sesion_manda_al_login(client):
+    resp = client.get("/usuarios", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
+def test_invitar_crea_la_cuenta_y_agenda_el_correo(client, db, usuario, monkeypatch):
+    cuerpos = []
+    _parchar_envio(monkeypatch, cuerpos)
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "invitar", "email": "nueva@gridworks.cl",
+                                          "nombre": "Nueva Persona"})
+
+    assert resp.status_code == 200
+    assert "nueva@gridworks.cl" in resp.text
+    creado = usuarios.por_email(db, "nueva@gridworks.cl")
+    assert creado is not None
+    assert creado.nombre == "Nueva Persona"
+    assert creado.activo is True
+    assert len(cuerpos) == 1
+
+
+def test_la_cuenta_invitada_no_tiene_clave_usable_hasta_usar_el_enlace(client, db, usuario, monkeypatch):
+    cuerpos = []
+    _parchar_envio(monkeypatch, cuerpos)
+    _con_sesion(client, usuario)
+
+    client.post("/usuarios", data={"accion": "invitar", "email": "nueva@gridworks.cl", "nombre": ""})
+
+    # Nadie sabe la clave con la que se creo (es aleatoria): ni siquiera un
+    # valor obvio como el correo o una clave vacia debe autenticar.
+    for intento in ("", "nueva@gridworks.cl", "clave", "123456789012"):
+        resultado, _ = usuarios.autenticar(db, "nueva@gridworks.cl", intento)
+        assert resultado is not usuarios.Resultado.OK
+
+    token = _token_del_correo(cuerpos[0])
+    resp_post = client.post(
+        f"/restablecer/{token}",
+        data={"password": "clave-nueva-larga-9", "password2": "clave-nueva-larga-9"},
+        follow_redirects=False,
+    )
+    assert resp_post.status_code == 303
+    resultado, _ = usuarios.autenticar(db, "nueva@gridworks.cl", "clave-nueva-larga-9")
+    assert resultado is usuarios.Resultado.OK
+
+
+def test_invitar_con_correo_duplicado_no_crea_una_segunda_fila(client, db, usuario, monkeypatch):
+    _parchar_envio(monkeypatch)
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "invitar", "email": "rafael@gridworks.cl", "nombre": ""})
+
+    assert resp.status_code == 400
+    assert "ya tiene cuenta" in resp.text
+    filas = db.query(main.Usuario).filter(main.Usuario.email == "rafael@gridworks.cl").count()
+    assert filas == 1
+
+
+def test_invitar_con_correo_invalido_no_crea_cuenta(client, db, usuario, monkeypatch):
+    llamadas = _parchar_envio(monkeypatch)
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "invitar", "email": "no-es-un-correo", "nombre": ""})
+
+    assert resp.status_code == 400
+    assert usuarios.por_email(db, "no-es-un-correo") is None
+    assert llamadas == []
+
+
+def test_invitar_con_nombre_demasiado_largo_no_crea_cuenta(client, db, usuario, monkeypatch):
+    _parchar_envio(monkeypatch)
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "invitar", "email": "nueva@gridworks.cl",
+                                          "nombre": "a" * 500})
+
+    assert resp.status_code == 400
+    assert usuarios.por_email(db, "nueva@gridworks.cl") is None
+
+
+def test_desactivar_deja_a_la_persona_sin_acceso_de_inmediato(client, db, usuario):
+    """La cookie de la persona dada de baja debe dejar de servir apenas se la
+    desactiva, sin esperar a que expire."""
+    from fastapi.testclient import TestClient
+    from app.main import app as app_real
+
+    objetivo = usuarios.crear(db, "otra@gridworks.cl", nombre="Otra", clave="clave-larga-2")
+    cookie_objetivo = auth.create_session_cookie(objetivo)
+    cliente_objetivo = TestClient(app_real, raise_server_exceptions=False)
+    cliente_objetivo.cookies.set(auth.COOKIE_NAME, cookie_objetivo)
+    assert cliente_objetivo.get("/", follow_redirects=False).status_code == 200
+
+    _con_sesion(client, usuario)
+    resp = client.post("/usuarios", data={"accion": "desactivar", "usuario_id": str(objetivo.id)})
+    assert resp.status_code == 200
+    assert "quedó sin acceso" in resp.text
+
+    resp2 = cliente_objetivo.get("/", follow_redirects=False)
+    assert resp2.status_code == 303
+    assert resp2.headers["location"] == "/login"
+
+
+def test_no_se_puede_dar_de_baja_la_propia_cuenta(client, db, usuario):
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "desactivar", "usuario_id": str(usuario.id)})
+
+    assert resp.status_code == 400
+    assert "propia cuenta" in resp.text
+    db.refresh(usuario)
+    assert usuario.activo is True
+
+
+def test_desactivar_con_usuario_id_no_numerico_da_no_encontrado_no_500(client, usuario):
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "desactivar", "usuario_id": "abc"})
+
+    assert resp.status_code == 404
+    assert "no encontrada" in resp.text.lower()
+
+
+def test_desactivar_con_id_inexistente_da_no_encontrado(client, usuario):
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "desactivar", "usuario_id": "999999"})
+
+    assert resp.status_code == 404
+
+
+def test_accion_desconocida_da_400(client, usuario):
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "volar"})
+
+    assert resp.status_code == 400

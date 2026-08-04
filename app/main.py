@@ -1,5 +1,6 @@
 import io
 import logging
+import re
 import threading
 import zipfile
 from collections import defaultdict
@@ -31,6 +32,16 @@ LARGO_MAXIMO_CLAVE = 200
 # valor mas largo no puede ser una cuenta real, asi que se corta antes de
 # tocar la base.
 LARGO_MAXIMO_EMAIL = 320
+
+# El nombre es solo para mostrar en la lista de usuarios: no hay razon para
+# aceptar algo mas largo que esto en un campo de texto libre.
+LARGO_MAXIMO_NOMBRE = 200
+
+# Chequeo deliberadamente simple (no RFC 5322 completo): alcanza para atajar
+# un valor vacio o sin forma de correo antes de crear una cuenta inservible y
+# mandar un enlace a una direccion que no es tal. No vale la pena sumar una
+# dependencia de validacion para esto.
+_PATRON_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # /docs, /redoc y /openapi.json quedan desactivados: en un host que sirve
 # facturas no tiene sentido publicar toda la superficie de la API (rutas de
@@ -250,6 +261,77 @@ def cuenta_submit(request: Request, actual: str = Form(...), password: str = For
     # no quedar afuera junto con las sesiones de los otros dispositivos.
     resp = RedirectResponse("/cuenta?ok=1", status_code=303)
     return _set_session(resp, usuario)
+
+
+def _validar_invitacion(email: str, nombre: str):
+    """Devuelve el mensaje de error, o None si esta bien. email debe venir ya
+    normalizado (usuarios.normalizar_email), asi el mensaje y la creacion
+    posterior usan el mismo valor."""
+    if len(email) > LARGO_MAXIMO_EMAIL:
+        return "Ese correo es demasiado largo."
+    if not _PATRON_EMAIL.match(email):
+        return "Ingresa un correo válido."
+    if len(nombre) > LARGO_MAXIMO_NOMBRE:
+        return "Ese nombre es demasiado largo."
+    return None
+
+
+def _pantalla_usuarios(request, db, usuario, mensaje=None, error=None, status=200):
+    filas = db.query(Usuario).order_by(Usuario.email).all()
+    return templates.TemplateResponse(
+        "usuarios.html",
+        {"request": request, "usuario": usuario, "usuarios": filas,
+         "mensaje": mensaje, "error": error},
+        status_code=status,
+    )
+
+
+@app.get("/usuarios", response_class=HTMLResponse)
+def usuarios_lista(request: Request, usuario: Usuario = Depends(require_login),
+                   db: Session = Depends(get_db)):
+    return _pantalla_usuarios(request, db, usuario)
+
+
+@app.post("/usuarios", response_class=HTMLResponse)
+def usuarios_accion(request: Request, tareas: BackgroundTasks, accion: str = Form(...),
+                    email: str = Form(""), nombre: str = Form(""), usuario_id: str = Form(""),
+                    usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
+    if accion == "invitar":
+        correo = usuarios.normalizar_email(email)
+        error = _validar_invitacion(correo, nombre)
+        if error:
+            return _pantalla_usuarios(request, db, usuario, error=error, status=400)
+
+        if usuarios.por_email(db, correo):
+            return _pantalla_usuarios(request, db, usuario,
+                                      error=f"{correo} ya tiene cuenta.", status=400)
+        nuevo = usuarios.crear(db, correo, nombre=nombre)
+        usuarios.reclamar_envio_reset(db, nuevo)  # cuenta recien creada: siempre gana el turno
+        tareas.add_task(_enviar_enlace_reset, nuevo.email, crear_token_reset(nuevo))
+        return _pantalla_usuarios(
+            request, db, usuario,
+            mensaje=f"Cuenta creada. Le enviamos a {nuevo.email} un enlace para definir su clave."
+        )
+
+    if accion == "desactivar":
+        # usuario_id llega como texto de un <input type="hidden">: un valor no
+        # numerico (manipulado o corrupto) no debe tumbar la ruta con un 500,
+        # se trata igual que un id que no existe.
+        try:
+            objetivo_id = int(usuario_id)
+        except ValueError:
+            return _pantalla_usuarios(request, db, usuario, error="Cuenta no encontrada.", status=404)
+
+        objetivo = db.query(Usuario).filter(Usuario.id == objetivo_id).first()
+        if objetivo is None:
+            return _pantalla_usuarios(request, db, usuario, error="Cuenta no encontrada.", status=404)
+        if objetivo.id == usuario.id:
+            return _pantalla_usuarios(request, db, usuario,
+                                      error="No puedes dar de baja tu propia cuenta.", status=400)
+        usuarios.desactivar(db, objetivo)
+        return _pantalla_usuarios(request, db, usuario, mensaje=f"{objetivo.email} quedó sin acceso.")
+
+    return _pantalla_usuarios(request, db, usuario, error="Acción desconocida.", status=400)
 
 
 @app.get("/", response_class=HTMLResponse)
