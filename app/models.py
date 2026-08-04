@@ -1,7 +1,16 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import Column, Integer, String, Date, Numeric, DateTime, Boolean, Text, LargeBinary
 from sqlalchemy.sql import func
 
 from app.db import Base
+
+
+def ahora_utc() -> datetime:
+    """UTC sin zona horaria. Las columnas que se comparan en Python usan DateTime
+    naive porque SQLite no guarda la zona: si guardaramos un datetime con zona,
+    al releerlo vendria sin ella y la comparacion lanzaria TypeError."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Proveedor(Base):
@@ -58,3 +67,29 @@ class Purchase(Base):
     notas = Column(Text, nullable=True)
 
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Usuario(Base):
+    """Cuenta de acceso a la aplicacion. Todas las cuentas tienen los mismos
+    permisos: no hay campo de rol.
+
+    Todas las fechas de esta tabla son UTC naive, escritas con ahora_utc().
+    Nunca compararlas contra Purchase.creado_en ni Proveedor.creado_en, que
+    llevan zona horaria: mezclar los dos tipos lanza TypeError."""
+    __tablename__ = "usuarios"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True, nullable=False, index=True)  # siempre en minusculas
+    nombre = Column(String, nullable=True)
+    password_hash = Column(String, nullable=False)
+
+    # Va dentro de la cookie firmada y de los tokens de recuperacion. Subirlo
+    # invalida de inmediato todas las sesiones y enlaces de esta cuenta.
+    token_version = Column(Integer, nullable=False, default=1)
+
+    activo = Column(Boolean, nullable=False, default=True)
+    intentos_fallidos = Column(Integer, nullable=False, default=0)
+    bloqueado_hasta = Column(DateTime, nullable=True)
+    ultimo_ingreso = Column(DateTime, nullable=True)
+    reset_enviado_en = Column(DateTime, nullable=True)  # freno al reenvio de enlaces
+    creado_en = Column(DateTime, nullable=False, default=ahora_utc)

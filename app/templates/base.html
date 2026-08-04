@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
   <title>{% block title %}GridWorks Contabilidad{% endblock %}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -10,8 +11,12 @@
 <body class="bg-gray-50 text-gray-900 min-h-screen">
   <nav class="bg-gray-900 text-white px-6 py-3 flex justify-between items-center">
     <span class="font-semibold">GridWorks · Libro de Compras</span>
-    {% if authenticated %}
-    <a href="/logout" class="text-sm text-gray-300 hover:text-white">Salir</a>
+    {% if usuario %}
+    <span class="text-sm text-gray-300 flex items-center gap-4">
+      <a href="/usuarios" class="hover:text-white">Usuarios</a>
+      <a href="/cuenta" class="hover:text-white">{{ usuario.email }}</a>
+      <a href="/logout" class="hover:text-white">Salir</a>
+    </span>
     {% endif %}
   </nav>
   <main class="max-w-6xl mx-auto p-6">

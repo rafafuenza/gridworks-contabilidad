@@ -25,8 +25,22 @@ GMAIL_DECLARED_LABEL = os.environ.get(
 # A quien se le avisa por correo cuando se acepta un lote (compras declaradas)
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "contabilidad@gridworks.cl")
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+# Sin default a proposito: ver la validacion en app/auth.py, que es el modulo
+# que firma. La comprobacion no vive aqui porque los entrypoints de tareas
+# (app/tasks/monthly_cron.py) importan la configuracion y no firman nada:
+# hacerlos morir por falta de una clave que no usan dejaria la sincronizacion
+# mensual caida en silencio.
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+LARGO_MINIMO_SECRET_KEY = 32
 # En produccion (HTTPS, ej. Railway) poner COOKIE_SECURE=true para que la cookie
 # de sesion nunca viaje en claro. En local (http) dejar sin setear.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+
+# Siembra de la primera cuenta. Solo se usan si la tabla usuarios esta vacia;
+# una vez creada la cuenta se pueden borrar del entorno.
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+# URL publica, para armar el enlace absoluto del correo de recuperacion. No se
+# deriva del request porque detras del proxy de Railway no es confiable.
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")

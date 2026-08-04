@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-10 bg-white p-6 rounded-lg shadow">
+  <h1 class="text-lg font-semibold mb-1">Mi cuenta</h1>
+  <p class="text-sm text-gray-500 mb-4">{{ usuario.email }}</p>
+
+  {% if mensaje %}
+    <p class="text-blue-700 text-sm mb-3">{{ mensaje }}</p>
+  {% endif %}
+  {% if error %}
+    <p class="text-red-600 text-sm mb-3">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/cuenta">
+    <input type="password" name="actual" placeholder="Clave actual" required
+           class="w-full border rounded px-3 py-2 mb-3" />
+    <input type="password" name="password" placeholder="Clave nueva" required
+           class="w-full border rounded px-3 py-2 mb-3" />
+    <input type="password" name="password2" placeholder="Repite la clave nueva" required
+           class="w-full border rounded px-3 py-2 mb-3" />
+    <button type="submit" class="w-full bg-gray-900 text-white rounded px-3 py-2">
+      Cambiar clave
+    </button>
+  </form>
+  <p class="text-xs text-gray-500 mt-3">
+    Mínimo 10 caracteres. Al cambiarla se cierran las sesiones en otros dispositivos.
+  </p>
+</div>
+{% endblock %}

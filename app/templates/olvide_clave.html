@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-20 bg-white p-6 rounded-lg shadow">
+  <h1 class="text-lg font-semibold mb-4">Restablecer clave</h1>
+  {% if mensaje %}
+    <p class="text-blue-700 text-sm mb-3">{{ mensaje }}</p>
+    <a href="/login" class="text-sm text-gray-500 hover:underline">Volver a iniciar sesión</a>
+  {% else %}
+    <p class="text-sm text-gray-600 mb-3">
+      Escribe tu correo y te enviamos un enlace para definir una clave nueva.
+    </p>
+    <form method="post" action="/olvide-clave">
+      <input type="email" name="email" placeholder="Correo" required autofocus
+             class="w-full border rounded px-3 py-2 mb-3" />
+      <button type="submit" class="w-full bg-gray-900 text-white rounded px-3 py-2">
+        Enviar enlace
+      </button>
+    </form>
+    <p class="text-sm text-gray-500 mt-3">
+      <a href="/login" class="hover:underline">Volver</a>
+    </p>
+  {% endif %}
+</div>
+{% endblock %}

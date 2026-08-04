@@ -219,11 +219,11 @@ import hmac
 import secrets
 
 _ALGORITMO = "scrypt"
-_N = 2 ** 14      # costo de CPU/memoria: ~16 MB por hasheo
+_N = 2 ** 16      # costo de CPU/memoria: 64 MB por hasheo (128*r*N)
 _R = 8
 _P = 1
 _DKLEN = 32
-_MAXMEM = 64 * 1024 * 1024  # holgura sobre los 16 MB que pide n=2**14
+_MAXMEM = 256 * 1024 * 1024  # holgura real sobre los 64 MB que pide n=2**16
 
 
 def hash_password(plain: str) -> str:
@@ -275,6 +275,18 @@ Expected: PASS, 4 passed.
 git add app/security.py tests/test_security.py
 git commit -m "feat: hasheo de claves con scrypt"
 ```
+
+> **Nota de ejecución (2026-08-03):** la revisión de calidad de esta tarea pidió
+> seis ajustes que se aplicaron en un commit aparte: subir `_N` a `2**16` con
+> `_MAXMEM` de 256 MB (el valor original de 64 MB habría hecho fallar cualquier
+> subida futura, porque `n=2**16` pide exactamente 64 MB), acotar los parámetros
+> `n`/`r`/`p` leídos del hash guardado para que una fila manipulada no provoque
+> una asignación enorme en cada intento de login, estrechar el `except` a solo
+> `ValueError`, renombrar `largo` a `n_bytes` (`token_urlsafe` recibe bytes, no
+> caracteres), normalizar a NFC antes de hashear y verificar — porque una clave
+> con tilde o eñe escrita desde otro sistema produce bytes distintos y el login
+> fallaría sin diagnóstico posible —, y sumar pruebas del formato del hash, del
+> algoritmo equivocado y de los parámetros fuera de rango.
 
 ---
 
@@ -544,11 +556,19 @@ def autenticar(db: Session, email: str, clave: str):
 
 
 def _registrar_intento_fallido(db: Session, u: Usuario) -> None:
-    u.intentos_fallidos = (u.intentos_fallidos or 0) + 1
+    """El incremento va en la base y no en Python: entre que se leyo el usuario
+    y se escribe pasan ~650 ms hasheando, y varios intentos en paralelo leerian
+    todos el mismo valor viejo y se pisarian, dejando el bloqueo sin efecto."""
+    db.query(Usuario).filter(Usuario.id == u.id).update(
+        {Usuario.intentos_fallidos: Usuario.intentos_fallidos + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    db.refresh(u)
     if u.intentos_fallidos >= MAX_INTENTOS:
         u.bloqueado_hasta = ahora_utc() + timedelta(minutes=BLOQUEO_MINUTOS)
         u.intentos_fallidos = 0
-    db.commit()
+        db.commit()
 
 
 def cambiar_clave(db: Session, u: Usuario, nueva: str) -> None:
@@ -581,6 +601,25 @@ Expected: PASS, 7 passed.
 git add app/usuarios.py tests/test_usuarios.py
 git commit -m "feat: crear y autenticar usuarios"
 ```
+
+> **Nota de ejecución (2026-08-03):** la revisión de calidad encontró que el
+> bloqueo, tal como estaba escrito arriba originalmente, no servía. El contador
+> se leía en Python y se reescribía como valor absoluto; entre la lectura y la
+> escritura pasan ~650 ms hasheando, y FastAPI atiende las rutas síncronas en un
+> pool de 40 hilos, así que 40 intentos simultáneos leían todos `0` y escribían
+> todos `1` — 40 pruebas costaban un solo incremento, repetible sin límite. El
+> código de arriba ya está corregido con el incremento atómico en la base.
+>
+> De ahí salieron otros tres cambios: un tope de dos hasheos simultáneos en
+> `app/security.py` (cada hasheo pide 64 MB y el camino de "correo no existe"
+> también hashea, así que sin tope un puñado de intentos voltea el contenedor);
+> una prueba de concurrencia con 8 hilos, que usa una base SQLite en archivo y
+> no `StaticPool` — con `StaticPool` los 8 hilos comparten una sola conexión
+> sqlite3 y la prueba falla sola de forma intermitente; y comentarios que dejan
+> por escrito que el camino de cuenta bloqueada responde rápido a propósito.
+>
+> El arreglo se verificó revirtiéndolo: 11 de 11 corridas verdes con el
+> incremento atómico, 3 de 3 rojas sin él.
 
 ---
 
@@ -1239,7 +1278,8 @@ Aquí `app/main.py` vuelve a cargar. Cambia el login, y las 9 rutas existentes p
 
 - [ ] **Step 1: Cambiar los imports de `app/main.py`**
 
-Reemplaza las líneas 12-17:
+Reemplaza las líneas 12-17 (nota que `BackgroundTasks` se suma al import de
+`fastapi` de la línea 6, que lo necesitan las rutas de las Tasks 14 y 16):
 
 ```python
 from app.config import COOKIE_SECURE, NOTIFY_EMAIL, GMAIL_LABEL, BASE_URL
@@ -1678,10 +1718,13 @@ Agrega en `app/main.py`, después de la ruta `/logout`:
 MENSAJE_ENLACE = "Si el correo está registrado, te enviamos un enlace para restablecer tu clave."
 
 
-def _enviar_enlace_reset(db, u: Usuario) -> None:
-    """Manda el enlace. Silencia los errores de SMTP a proposito: si el correo
-    no sale, la persona no debe enterarse por un 500, y el aviso queda en el log."""
-    token = crear_token_reset(u)
+def _enviar_enlace_reset(email: str, token: str) -> None:
+    """Corre DESPUES de responder, no dentro del request. Recibe valores planos
+    y no el objeto ORM, porque para cuando esto se ejecuta la sesion de base de
+    datos ya se cerro.
+
+    Silencia los errores de SMTP a proposito: si el correo no sale, la persona
+    no debe enterarse por un 500, y el aviso queda en el log."""
     cuerpo = (
         f"Para definir tu clave de acceso al Libro de Compras, entra a este enlace:\n\n"
         f"{BASE_URL}/restablecer/{token}\n\n"
@@ -1689,10 +1732,9 @@ def _enviar_enlace_reset(db, u: Usuario) -> None:
         f"Si no pediste esto, ignora el correo: tu clave actual sigue funcionando.\n"
     )
     try:
-        gmail_sync.enviar_correo(u.email, "Restablecer tu clave · Libro de Compras", cuerpo)
-        usuarios.marcar_reset_enviado(db, u)
+        gmail_sync.enviar_correo(email, "Restablecer tu clave · Libro de Compras", cuerpo)
     except Exception as e:
-        print(f"[reset] No se pudo enviar el correo a {u.email}: {e}")
+        print(f"[reset] No se pudo enviar el correo a {email}: {e}")
 
 
 @app.get("/olvide-clave", response_class=HTMLResponse)
@@ -1701,10 +1743,16 @@ def olvide_clave_form(request: Request):
 
 
 @app.post("/olvide-clave", response_class=HTMLResponse)
-def olvide_clave_submit(request: Request, email: str = Form(...), db: Session = Depends(get_db)):
+def olvide_clave_submit(request: Request, tareas: BackgroundTasks, email: str = Form(...),
+                        db: Session = Depends(get_db)):
     u = usuarios.por_email(db, email)
-    if u and u.activo and usuarios.puede_enviar_reset(u):
-        _enviar_enlace_reset(db, u)
+    # El turno se toma AQUI, dentro del request, y el envio se agenda para
+    # despues de responder. Si el correo se mandara aqui mismo, un correo con
+    # cuenta tardaria lo que tarda el SMTP y uno sin cuenta contestaria al
+    # instante: el mensaje seria el mismo pero el tiempo delataria cuales
+    # existen, que es justo lo que este flujo trata de no revelar.
+    if u and u.activo and usuarios.reclamar_envio_reset(db, u):
+        tareas.add_task(_enviar_enlace_reset, u.email, crear_token_reset(u))
     # Respuesta identica exista o no la cuenta, y haya salido o no el correo.
     return templates.TemplateResponse(
         "olvide_clave.html", {"request": request, "usuario": None, "mensaje": MENSAJE_ENLACE}
@@ -1744,7 +1792,15 @@ def restablecer_submit(request: Request, token: str, password: str = Form(...),
             status_code=400,
         )
 
-    usuarios.cambiar_clave(db, u, password)
+    # cambiar_clave devuelve False si otra peticion redimio el mismo enlace
+    # primero. En ese caso el enlace ya no sirve y hay que decirlo, no fingir
+    # que se guardo.
+    if not usuarios.cambiar_clave(db, u, password):
+        return templates.TemplateResponse(
+            "restablecer.html",
+            {"request": request, "usuario": None, "invalido": True},
+            status_code=400,
+        )
     return RedirectResponse("/login", status_code=303)
 
 
@@ -1918,7 +1974,13 @@ def cuenta_submit(request: Request, actual: str = Form(...), password: str = For
             "cuenta.html", {"request": request, "usuario": usuario, "error": error}, status_code=400
         )
 
-    usuarios.cambiar_clave(db, usuario, password)
+    if not usuarios.cambiar_clave(db, usuario, password):
+        return templates.TemplateResponse(
+            "cuenta.html",
+            {"request": request, "usuario": usuario,
+             "error": "Tu clave cambio desde otra pestaña. Vuelve a intentarlo."},
+            status_code=409,
+        )
     # cambiar_clave subio token_version: hay que reemitir la cookie propia para
     # no quedar afuera junto con las sesiones de los otros dispositivos.
     resp = RedirectResponse("/cuenta?ok=1", status_code=303)
@@ -2077,15 +2139,16 @@ def usuarios_lista(request: Request, usuario: Usuario = Depends(require_login),
 
 
 @app.post("/usuarios", response_class=HTMLResponse)
-def usuarios_accion(request: Request, accion: str = Form(...), email: str = Form(""),
-                    nombre: str = Form(""), usuario_id: str = Form(""),
+def usuarios_accion(request: Request, tareas: BackgroundTasks, accion: str = Form(...),
+                    email: str = Form(""), nombre: str = Form(""), usuario_id: str = Form(""),
                     usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     if accion == "invitar":
         if usuarios.por_email(db, email):
             return _pantalla_usuarios(request, db, usuario,
                                       error=f"{email} ya tiene cuenta.", status=400)
         nuevo = usuarios.crear(db, email, nombre=nombre)
-        _enviar_enlace_reset(db, nuevo)
+        usuarios.reclamar_envio_reset(db, nuevo)  # cuenta recien creada: siempre gana el turno
+        tareas.add_task(_enviar_enlace_reset, nuevo.email, crear_token_reset(nuevo))
         return _pantalla_usuarios(
             request, db, usuario,
             mensaje=f"Cuenta creada. Le enviamos a {nuevo.email} un enlace para definir su clave."

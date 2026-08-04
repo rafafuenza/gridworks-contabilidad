@@ -252,9 +252,8 @@ def _uid_de_message_id(imap: imaplib.IMAP4_SSL, message_id: str):
     return None
 
 
-def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str, adjunto=None) -> str:
-    """Envia un correo por SMTP (Gmail) y le aplica una etiqueta de Gmail a la copia
-    guardada (en Enviados). Devuelve el Message-ID usado.
+def enviar_correo(to: str, asunto: str, cuerpo: str, adjunto=None) -> str:
+    """Envia un correo por SMTP (Gmail). Devuelve el Message-ID usado.
 
     adjunto: opcional, tupla (filename, bytes, subtipo_mime)."""
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
@@ -280,6 +279,17 @@ def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str,
         s.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         s.sendmail(GMAIL_ADDRESS, [to], msg.as_string())
 
+    return mid
+
+
+def enviar_correo_con_etiqueta(to: str, asunto: str, cuerpo: str, etiqueta: str, adjunto=None) -> str:
+    """Envia un correo y le aplica una etiqueta de Gmail a la copia guardada
+    (en Enviados). Devuelve el Message-ID usado.
+
+    El envio plano vive aparte porque el etiquetado reconecta por IMAP y
+    reintenta varios segundos: para el correo de recuperacion de clave eso
+    sobra y solo lo haria lento."""
+    mid = enviar_correo(to, asunto, cuerpo, adjunto=adjunto)
     _etiquetar_mensaje(mid, etiqueta)
     return mid
 
