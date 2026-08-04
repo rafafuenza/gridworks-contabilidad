@@ -60,3 +60,25 @@ def db():
     finally:
         sesion.close()
         engine.dispose()
+
+
+@pytest.fixture
+def client(db):
+    """Cliente HTTP contra la app real, con la base de pruebas inyectada.
+
+    raise_server_exceptions=False deja que el 303 que lanza require_login se
+    vea como respuesta en vez de propagarse como excepcion.
+
+    OJO: no se usa 'with TestClient(...)'. El context manager dispara los
+    eventos de startup, y on_startup llama a init_db() y ensure_seed() contra
+    el engine real: las pruebas escribirian en local.db (o peor, en el Postgres
+    de Railway si DATABASE_URL esta apuntando alla). Sin el 'with', el lifespan
+    no corre y la app usa solo la base inyectada por dependency_overrides."""
+    from fastapi.testclient import TestClient
+
+    from app.db import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: db
+    yield TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides.clear()
