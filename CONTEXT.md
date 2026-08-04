@@ -18,9 +18,9 @@ partir de correos de Gmail. Mas adelante se va a sumar **Libro de Ventas** e
 - **DB**: Postgres (Railway managed addon). El PDF original de cada factura se
   guarda como `bytea` en la tabla `purchases` (no hay volumen de archivos
   separado).
-- **Auth**: clave unica compartida (`APP_PASSWORD`), cookie firmada con
-  `itsdangerous`. No hay multi-usuario ni OAuth (se evaluo Google OAuth y se
-  descarto por ahora, por simplicidad).
+- **Auth**: multi-usuario con correo y clave propios (ver seccion dedicada
+  mas abajo). Cookie firmada con `itsdangerous`. No hay OAuth (se evaluo
+  Google OAuth y se descarto por ahora, por simplicidad).
 - **Hosting**: Railway, conectado directo al repo de GitHub
   (`rafafuenza/gridworks-contabilidad`, privado). Deploy automatico al hacer
   push a `main`.
@@ -29,6 +29,64 @@ partir de correos de Gmail. Mas adelante se va a sumar **Libro de Ventas** e
   "Actualizar ahora" en la UI para correrlo on-demand.
 - **Dominio**: eventualmente `conta.gridworks.cl` (dominio ya existe, falta
   agregar el CNAME cuando se despliegue).
+
+## Autenticacion (multi-usuario, correo y clave) — decisiones a preservar
+
+Se reemplazo la clave unica compartida (`APP_PASSWORD`) por cuentas
+individuales (tabla `usuarios`: `app/models.py`, `app/usuarios.py`,
+`app/auth.py`, `app/security.py`). Cada persona entra con su correo y su
+propia clave; se invita desde `/usuarios`, se cambia la clave propia desde
+`/cuenta`, y hay recuperacion por correo (`/olvide-clave`,
+`/restablecer/{token}`). El detalle de uso esta en el README, seccion
+"Acceso". Lo que sigue son las decisiones de diseño que **no** son obvias
+leyendo el codigo, para que nadie las "arregle" sin saber por que estan asi:
+
+- **No hay tabla de sesiones, a proposito.** La cookie de sesion es un token
+  firmado (`itsdangerous`) que lleva `{"uid": ..., "v": ...}`, donde `v` es
+  `Usuario.token_version`. Subir esa version (al cambiar la clave o al
+  desactivar la cuenta, ver `usuarios.cambiar_clave` / `usuarios.desactivar`)
+  invalida de un solo golpe todas las cookies y enlaces de recuperacion
+  vigentes de esa cuenta, sin tener que llevar registro de sesiones activas.
+- **Riesgo con restauraciones de backup**: si la base se restaura alguna vez
+  desde un backup tomado *antes* de un cambio de clave, `token_version`
+  vuelve atras y una cookie robada que ya deberia estar muerta podria volver
+  a servir por lo que le quede de sus 30 dias de vida. Despues de cualquier
+  restauracion de backup, subir a mano el `token_version` de todos los
+  usuarios, o rotar `SECRET_KEY` (esto ultimo invalida todas las sesiones de
+  todos modos).
+- **No hay roles.** Todas las cuentas tienen los mismos permisos: cualquiera
+  que pueda entrar puede invitar y dar de baja a otras cuentas desde
+  `/usuarios`, incluida la suya propia salvo que sea la unica activa (no se
+  puede dar de baja a si mismo).
+- **El correo de recuperacion se manda DESPUES de responder** (via
+  `BackgroundTasks`, en `app/main.py`), pero el turno para enviarlo
+  (`usuarios.reclamar_envio_reset`) se reclama de forma sincrona, dentro del
+  request, antes de responder. Si el correo se mandara en linea, una
+  direccion con cuenta tardaria lo que tarda el SMTP y una sin cuenta
+  contestaria al instante — mismo mensaje, pero el tiempo delataria que
+  direcciones tienen cuenta.
+- **El camino de cuenta bloqueada responde rapido y sin hashear** (ver
+  `usuarios.autenticar`). Eso revela que la cuenta existe una vez que ya lleva
+  5 intentos fallidos; es una fuga aceptada a proposito, porque hashear ahi le
+  regalaria a quien ataca ~650 ms y 64 MB de trabajo por cada request que ya
+  esta bloqueado — peor que la fuga.
+- **Hasheo de claves con `hashlib.scrypt`** (estandar de Python), no
+  bcrypt/argon2, para no sumar una dependencia con binarios compilados.
+  `n=2**16` (64 MB por hasheo), no `2**17` (el piso de OWASP, 128 MB), porque
+  esto corre en un contenedor chico de Railway. Como mucho 2 hasheos corren en
+  paralelo, acotado por un semaforo en `app/security.py`.
+- **`sembrar_admin_inicial` tiene una carrera de un solo uso, aceptada**:
+  revisa `count() == 0` y despues inserta, sin transaccion que cubra las dos
+  cosas, asi que con varios workers en el primer arranque podria correr dos
+  veces en paralelo. Se acepta porque la app corre como instancia unica, el
+  indice unico de `email` hace que la segunda insercion falle ruidosamente en
+  vez de duplicar silenciosamente, y la ventana solo existe una vez en la
+  vida del deploy.
+- **El log de arranque usa el logger de uvicorn (`logging.getLogger("uvicorn.error")`),
+  no uno nuevo**: un logger propio hereda del root logger, que no tiene
+  handler configurado y descarta todo lo que sea menos severo que WARNING —
+  los avisos de arranque (`BASE_URL para los enlaces de correo`, `Cuenta
+  inicial creada`) no habrian salido en el log de Railway con un logger nuevo.
 
 ## Mantenedor de proveedores y flujo de aceptacion (importante)
 
@@ -152,12 +210,27 @@ Detalles del sync:
    conversacion con el usuario sobre alcance: ¿carga de facturas de venta
    electronicas? ¿consulta de estado? etc.)
 8. Dominio custom `conta.gridworks.cl` en Railway.
-9. Revisar si vale la pena mover el shared-secret auth a algo mas robusto
-   (Google OAuth) si mas de una persona va a usar la app.
+9. Auth multi-usuario con correo y clave ya implementada (branch
+   `login-correo-clave`, ver seccion "Autenticacion" arriba) — resuelto, ya
+   no hace falta OAuth para que mas de una persona use la app.
+10. Primer despliegue con el nuevo login: seguir el orden de "Primer
+    despliegue" del README (setear `SECRET_KEY`/`BASE_URL`/`COOKIE_SECURE`/
+    `ADMIN_EMAIL`+`ADMIN_PASSWORD`, confirmar en el log, entrar, cambiar
+    clave, invitar al contador, y recien ahi borrar `ADMIN_EMAIL`/
+    `ADMIN_PASSWORD` y la ya no usada `APP_PASSWORD` de Railway).
+11. No hay roles: cualquier cuenta puede invitar y dar de baja a otras. Si
+    en algun momento se necesita distinguir permisos (ej. alguien que solo
+    pueda ver, no administrar usuarios), hay que agregarlo — hoy no existe.
+12. Si alguna vez se restaura la base desde un backup, recordar subir a mano
+    el `token_version` de todos los usuarios (o rotar `SECRET_KEY`): si el
+    backup es anterior a un cambio de clave, una cookie robada que deberia
+    estar muerta podria volver a servir. Ver seccion "Autenticacion" arriba.
 
 ## Variables de entorno (ver `.env.example`)
 
 `DATABASE_URL` (la inyecta Railway), `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`,
-`GMAIL_LABEL`, `GMAIL_DECLARED_LABEL`, `APP_PASSWORD`, `SECRET_KEY`. Ninguna esta
-en el repo, todas se configuran como secretos en Railway (o en `.env` local,
-gitignored).
+`GMAIL_LABEL`, `GMAIL_DECLARED_LABEL`, `SECRET_KEY`, `BASE_URL`,
+`COOKIE_SECURE`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (estas dos ultimas solo para
+la primera cuenta, se pueden borrar despues). Ninguna esta en el repo, todas
+se configuran como secretos en Railway (o en `.env` local, gitignored).
+`APP_PASSWORD` ya no existe: la reemplazo el login multi-usuario.
