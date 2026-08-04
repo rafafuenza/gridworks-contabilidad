@@ -7,6 +7,7 @@ from enum import Enum
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.config import ADMIN_EMAIL, ADMIN_PASSWORD
 from app.models import Usuario, ahora_utc
 from app.security import hash_password, verify_password, generar_clave_aleatoria
 
@@ -156,3 +157,16 @@ def reclamar_envio_reset(db: Session, u: Usuario) -> bool:
     db.commit()
     db.refresh(u)
     return filas == 1
+
+
+def sembrar_admin_inicial(db: Session):
+    """Crea la primera cuenta desde el entorno, solo si no hay ninguna. Devuelve
+    el usuario creado o None. Una vez creada, las variables se pueden borrar.
+
+    Se exigen las dos variables: con solo el correo se crearia una cuenta con
+    una clave al azar que nadie conoce, lo que se ve como exito y no lo es."""
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        return None
+    if db.query(Usuario).count() > 0:
+        return None
+    return crear(db, ADMIN_EMAIL, nombre="Admin", clave=ADMIN_PASSWORD)

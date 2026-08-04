@@ -362,3 +362,55 @@ def test_cambiar_clave_es_atomica_bajo_redenciones_concurrentes(tmp_path):
     finally:
         sesion_verificacion.close()
         engine.dispose()
+
+
+def test_la_siembra_crea_la_primera_cuenta(db, monkeypatch):
+    monkeypatch.setattr(usuarios, "ADMIN_EMAIL", "rafael@gridworks.cl")
+    monkeypatch.setattr(usuarios, "ADMIN_PASSWORD", "clave-de-arranque-1")
+
+    creado = usuarios.sembrar_admin_inicial(db)
+
+    assert creado is not None
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-de-arranque-1")
+    assert resultado is Resultado.OK
+
+
+def test_la_siembra_no_hace_nada_si_ya_hay_usuarios(db, monkeypatch):
+    """Asi las variables de arranque se pueden dejar puestas sin que pisen
+    la clave que la persona ya cambio."""
+    usuarios.crear(db, "alguien@gridworks.cl", clave="clave-larga-1")
+    monkeypatch.setattr(usuarios, "ADMIN_EMAIL", "rafael@gridworks.cl")
+    monkeypatch.setattr(usuarios, "ADMIN_PASSWORD", "clave-de-arranque-1")
+
+    assert usuarios.sembrar_admin_inicial(db) is None
+    assert usuarios.por_email(db, "rafael@gridworks.cl") is None
+
+
+def test_la_siembra_no_hace_nada_sin_variables(db, monkeypatch):
+    monkeypatch.setattr(usuarios, "ADMIN_EMAIL", "")
+    monkeypatch.setattr(usuarios, "ADMIN_PASSWORD", "")
+
+    assert usuarios.sembrar_admin_inicial(db) is None
+
+
+def test_la_siembra_es_idempotente(db, monkeypatch):
+    """El arranque puede correr varias veces (reinicios, mas de un worker)."""
+    monkeypatch.setattr(usuarios, "ADMIN_EMAIL", "rafael@gridworks.cl")
+    monkeypatch.setattr(usuarios, "ADMIN_PASSWORD", "clave-de-arranque-1")
+
+    primero = usuarios.sembrar_admin_inicial(db)
+    segundo = usuarios.sembrar_admin_inicial(db)
+
+    assert primero is not None
+    assert segundo is None
+    assert db.query(usuarios.Usuario).count() == 1
+
+
+def test_la_siembra_exige_las_dos_variables(db, monkeypatch):
+    """Con solo el correo no se crea una cuenta con clave al azar que nadie
+    sabria: es peor que no crear nada, porque parece que quedo lista."""
+    monkeypatch.setattr(usuarios, "ADMIN_EMAIL", "rafael@gridworks.cl")
+    monkeypatch.setattr(usuarios, "ADMIN_PASSWORD", "")
+
+    assert usuarios.sembrar_admin_inicial(db) is None
+    assert db.query(usuarios.Usuario).count() == 0
