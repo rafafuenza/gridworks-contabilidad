@@ -112,17 +112,25 @@ def test_la_cookie_vieja_de_clave_compartida_se_rechaza(db):
 def test_secret_key_invalida_no_arranca(monkeypatch, valor):
     """SECRET_KEY es obligatoria, no puede quedar en el valor de ejemplo, y no
     puede ser una frase corta: con una clave adivinable cualquiera se fabrica
-    una cookie de sesion valida."""
+    una cookie de sesion valida.
+
+    La comprobacion vive en app.auth (no en app.config, ver el comentario ahi):
+    solo el modulo que firma debe morir por una clave debil, para no tumbar de
+    paso al cron mensual, que importa la configuracion pero no firma nada."""
     assert len(valor) < config_module.LARGO_MINIMO_SECRET_KEY or valor == "dev-secret-change-me"
     monkeypatch.setenv("SECRET_KEY", valor)
     try:
+        # app.config debe recargar sin reventar (solo lee el valor); la
+        # comprobacion recien salta al recargar app.auth con ese valor puesto.
+        importlib.reload(config_module)
         with pytest.raises(RuntimeError):
-            importlib.reload(config_module)
+            importlib.reload(auth)
     finally:
-        # Se restaura el entorno ANTES de recargar, para dejar app.config en
-        # el mismo estado valido con el que arrancaron las demas pruebas.
+        # Se restaura el entorno ANTES de recargar, para dejar ambos modulos
+        # en el mismo estado valido con el que arrancaron las demas pruebas.
         monkeypatch.undo()
         importlib.reload(config_module)
+        importlib.reload(auth)
 
 
 def test_un_token_de_reset_identifica_al_usuario(db):

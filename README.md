@@ -24,11 +24,14 @@ Libro de Compras, con exportacion a Excel filtrable por mes.
 Ver `.env.example`. Railway inyecta `DATABASE_URL` automaticamente al agregar
 el addon de Postgres; el resto hay que configurarlo a mano en el servicio.
 
-- `SECRET_KEY` — **obligatoria, sin default: la app se niega a arrancar sin
-  ella.** Firma las cookies de sesion y los enlaces de recuperacion. Debe
-  tener al menos 32 caracteres y no puede ser el valor de ejemplo del
-  repo. Quien la conozca puede fabricarse una cookie de sesion valida y
-  entrar como cualquier usuario. Generarla con:
+- `SECRET_KEY` — **obligatoria para la aplicacion web, sin default: se niega a
+  arrancar sin ella.** Firma las cookies de sesion y los enlaces de
+  recuperacion. Debe tener al menos 32 caracteres y no puede ser el valor de
+  ejemplo del repo. Quien la conozca puede fabricarse una cookie de sesion
+  valida y entrar como cualquier usuario. La comprobacion vive en
+  `app/auth.py`, no en `app/config.py`, a proposito: el Cron Job
+  (`app.tasks.monthly_cron`) importa la configuracion pero no firma nada, asi
+  que no necesita `SECRET_KEY` para correr. Generarla con:
   ```
   python -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
@@ -109,7 +112,7 @@ otra vez.
 venv/Scripts/python -m pytest tests/ -v
 ```
 
-114 pruebas. Para que corran rapido, la suite baja el costo de scrypt durante
+115 pruebas. Para que corran rapido, la suite baja el costo de scrypt durante
 la ejecucion; un par de pruebas puntuales lo suben de vuelta al costo real de
 produccion para verificar ese camino tambien.
 

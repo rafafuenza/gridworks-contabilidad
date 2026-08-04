@@ -56,8 +56,8 @@ leyendo el codigo, para que nadie las "arregle" sin saber por que estan asi:
   todos modos).
 - **No hay roles.** Todas las cuentas tienen los mismos permisos: cualquiera
   que pueda entrar puede invitar y dar de baja a otras cuentas desde
-  `/usuarios`, incluida la suya propia salvo que sea la unica activa (no se
-  puede dar de baja a si mismo).
+  `/usuarios`, excepto la suya propia (no se puede dar de baja a si mismo,
+  sin excepcion).
 - **El correo de recuperacion se manda DESPUES de responder** (via
   `BackgroundTasks`, en `app/main.py`), pero el turno para enviarlo
   (`usuarios.reclamar_envio_reset`) se reclama de forma sincrona, dentro del

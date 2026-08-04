@@ -1,11 +1,17 @@
 import os
 
-# Debe ir antes de importar cualquier cosa de app: config.py se niega a cargar
+# Debe ir antes de importar cualquier cosa de app: app.auth se niega a cargar
 # sin SECRET_KEY, y no queremos que la suite dependa del .env de la maquina.
 # Se pisa sin condicion, no con setdefault: con setdefault una SECRET_KEY corta
 # en el ambiente rompe la suite entera al recolectar, y una larga se cuela como
 # la clave con que se firman las cookies de prueba.
 os.environ["SECRET_KEY"] = "clave-solo-para-pruebas-con-largo-suficiente-abcdefgh"
+
+# El fixture 'db' ya usa su propio engine SQLite en memoria via dependency_overrides,
+# pero eso descansa en que nada dispare el lifespan de la app real. Fijar esto
+# aqui es una segunda red: aunque algo importe app.db y toque el engine a nivel
+# de modulo, no puede llegar a local.db ni, peor, a un Postgres real de Railway.
+os.environ["DATABASE_URL"] = "sqlite://"
 
 import pytest
 from sqlalchemy import create_engine

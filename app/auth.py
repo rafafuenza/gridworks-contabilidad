@@ -4,7 +4,7 @@ from fastapi import Request, HTTPException, Depends
 from itsdangerous import URLSafeTimedSerializer, BadData
 from sqlalchemy.orm import Session
 
-from app.config import SECRET_KEY
+from app.config import SECRET_KEY, LARGO_MINIMO_SECRET_KEY
 from app.db import get_db
 from app.models import Usuario
 
@@ -13,6 +13,16 @@ MAX_AGE = 60 * 60 * 24 * 30  # 30 dias
 RESET_MAX_AGE = 60 * 30  # 30 minutos
 SALT_SESION = "sesion"
 SALT_RESET = "reset-clave"
+
+# Con una clave conocida o adivinable cualquiera puede fabricarse una cookie de
+# sesion valida y entrar como cualquier usuario. Se exige largo minimo porque
+# una frase legible, aunque sea larga, tiene poca entropia real. Es preferible
+# que la aplicacion no arranque a que arranque abierta.
+if len(SECRET_KEY) < LARGO_MINIMO_SECRET_KEY or SECRET_KEY == "dev-secret-change-me":
+    raise RuntimeError(
+        "SECRET_KEY falta, es la de ejemplo, o es demasiado corta. "
+        "Generala con: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+    )
 
 _serializer = URLSafeTimedSerializer(SECRET_KEY)
 

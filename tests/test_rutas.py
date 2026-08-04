@@ -12,7 +12,7 @@ def usuario(db):
     return usuarios.crear(db, "rafael@gridworks.cl", nombre="Rafael", clave="clave-larga-1")
 
 
-RUTAS_PROTEGIDAS = ["/", "/sync/estado", "/aceptar-mes/estado", "/export.xlsx", "/export/pdfs.zip"]
+RUTAS_PROTEGIDAS = ["/", "/sync/estado", "/aceptar-mes/estado", "/export.xlsx", "/export/pdfs.zip", "/pdf/1"]
 
 
 @pytest.mark.parametrize("ruta", RUTAS_PROTEGIDAS)
