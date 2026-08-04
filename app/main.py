@@ -3,17 +3,19 @@ import threading
 import zipfile
 from collections import defaultdict
 
-from fastapi import FastAPI, Request, Depends, Form
+from fastapi import FastAPI, Request, Depends, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, PlainTextResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import distinct
 
-from app.config import APP_PASSWORD, COOKIE_SECURE, NOTIFY_EMAIL, GMAIL_LABEL
+from app.config import COOKIE_SECURE, NOTIFY_EMAIL, GMAIL_LABEL, BASE_URL
 from app.db import get_db, init_db, SessionLocal
-from app.models import Purchase
-from app.auth import require_login, is_valid_session, create_session_cookie, COOKIE_NAME
-from app import gmail_sync, mantenedor
+from app.models import Purchase, Usuario
+from app.auth import (require_login, usuario_actual, create_session_cookie, crear_token_reset,
+                      leer_token_reset, COOKIE_NAME, MAX_AGE)
+from app import gmail_sync, mantenedor, usuarios
+from app.usuarios import Resultado, LARGO_MINIMO_CLAVE
 from app.excel_export import build_workbook
 
 app = FastAPI(title="GridWorks Contabilidad")
@@ -26,6 +28,9 @@ def on_startup():
     db = SessionLocal()
     try:
         mantenedor.ensure_seed(db)
+        sembrado = usuarios.sembrar_admin_inicial(db)
+        if sembrado:
+            print(f"[arranque] Cuenta inicial creada: {sembrado.email}")
     finally:
         db.close()
 
@@ -35,22 +40,39 @@ def health():
     return PlainTextResponse("ok")
 
 
+def _set_session(resp, u: Usuario):
+    resp.set_cookie(COOKIE_NAME, create_session_cookie(u), httponly=True, samesite="lax",
+                    secure=COOKIE_SECURE, max_age=MAX_AGE)
+    return resp
+
+
 @app.get("/login", response_class=HTMLResponse)
-def login_form(request: Request):
-    if is_valid_session(request):
+def login_form(request: Request, db: Session = Depends(get_db)):
+    if usuario_actual(request, db):
         return RedirectResponse("/", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "authenticated": False})
+    return templates.TemplateResponse("login.html", {"request": request, "usuario": None})
 
 
 @app.post("/login")
-def login_submit(request: Request, password: str = Form(...)):
-    if APP_PASSWORD and password == APP_PASSWORD:
-        resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(COOKIE_NAME, create_session_cookie(), httponly=True, samesite="lax",
-                        secure=COOKIE_SECURE, max_age=60 * 60 * 24 * 30)
-        return resp
+def login_submit(request: Request, email: str = Form(...), password: str = Form(...),
+                 db: Session = Depends(get_db)):
+    resultado, u = usuarios.autenticar(db, email, password)
+
+    if resultado is Resultado.OK:
+        return _set_session(RedirectResponse("/", status_code=303), u)
+
+    if resultado is Resultado.BLOQUEADO:
+        error = (f"Demasiados intentos fallidos. Espera {usuarios.BLOQUEO_MINUTOS} minutos "
+                 "o restablece tu clave.")
+    else:
+        # Credenciales malas, correo inexistente y cuenta dada de baja dan el
+        # mismo mensaje, para no revelar que cuentas existen.
+        error = "Correo o clave incorrectos."
+
     return templates.TemplateResponse(
-        "login.html", {"request": request, "authenticated": False, "error": "Clave incorrecta"}, status_code=401
+        "login.html",
+        {"request": request, "usuario": None, "error": error, "email": email},
+        status_code=401,
     )
 
 
@@ -62,9 +84,8 @@ def logout():
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, mes: str = "", flash: str = "", db: Session = Depends(get_db)):
-    require_login(request)
-
+def dashboard(request: Request, mes: str = "", flash: str = "",
+              usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     periodos = [p[0] for p in db.query(distinct(Purchase.periodo)).order_by(Purchase.periodo.desc()).all() if p[0]]
 
     query = db.query(Purchase)
@@ -83,7 +104,7 @@ def dashboard(request: Request, mes: str = "", flash: str = "", db: Session = De
         "index.html",
         {
             "request": request,
-            "authenticated": True,
+            "usuario": usuario,
             "purchases": purchases,
             "periodos": periodos,
             "mes_seleccionado": mes,
@@ -117,8 +138,7 @@ def _run_sync_bg():
 
 
 @app.post("/sync")
-def trigger_sync(request: Request):
-    require_login(request)
+def trigger_sync(request: Request, usuario: Usuario = Depends(require_login)):
     with _sync_lock:
         if _sync_state["running"]:
             return JSONResponse({"running": True, "ya_en_curso": True})
@@ -130,14 +150,13 @@ def trigger_sync(request: Request):
 
 
 @app.get("/sync/estado")
-def sync_estado(request: Request):
-    require_login(request)
+def sync_estado(request: Request, usuario: Usuario = Depends(require_login)):
     return JSONResponse(_sync_state)
 
 
 @app.post("/aceptar/{purchase_id}")
-def aceptar_uno(request: Request, purchase_id: int, mes: str = Form(""), db: Session = Depends(get_db)):
-    require_login(request)
+def aceptar_uno(request: Request, purchase_id: int, mes: str = Form(""),
+                usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     p = db.query(Purchase).get(purchase_id)
     if not p:
         return RedirectResponse("/?flash=Documento no encontrado", status_code=303)
@@ -236,8 +255,8 @@ def _enviar_aviso_declaradas(db, mes, cantidad, resumen):
 
 
 @app.post("/aceptar-mes")
-def aceptar_mes(request: Request, mes: str = Form(""), db: Session = Depends(get_db)):
-    require_login(request)
+def aceptar_mes(request: Request, mes: str = Form(""),
+                usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     with _accept_lock:
         if _accept_state["running"]:
             return JSONResponse({"running": True, "ya_en_curso": True})
@@ -252,14 +271,13 @@ def aceptar_mes(request: Request, mes: str = Form(""), db: Session = Depends(get
 
 
 @app.get("/aceptar-mes/estado")
-def aceptar_mes_estado(request: Request):
-    require_login(request)
+def aceptar_mes_estado(request: Request, usuario: Usuario = Depends(require_login)):
     return JSONResponse(_accept_state)
 
 
 @app.get("/export.xlsx")
-def export_excel(request: Request, mes: str = "", db: Session = Depends(get_db)):
-    require_login(request)
+def export_excel(request: Request, mes: str = "",
+                 usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     filename, content = _libro_excel(db, mes)
     return StreamingResponse(
         io.BytesIO(content),
@@ -269,8 +287,8 @@ def export_excel(request: Request, mes: str = "", db: Session = Depends(get_db))
 
 
 @app.get("/export/pdfs.zip")
-def export_pdfs(request: Request, mes: str = "", db: Session = Depends(get_db)):
-    require_login(request)
+def export_pdfs(request: Request, mes: str = "",
+                usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     query = db.query(Purchase)
     if mes:
         query = query.filter(Purchase.periodo == mes)
@@ -296,8 +314,8 @@ def export_pdfs(request: Request, mes: str = "", db: Session = Depends(get_db)):
 
 
 @app.get("/pdf/{purchase_id}")
-def view_pdf(request: Request, purchase_id: int, db: Session = Depends(get_db)):
-    require_login(request)
+def view_pdf(request: Request, purchase_id: int,
+             usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
     p = db.query(Purchase).get(purchase_id)
     if not p or not p.pdf_data:
         return PlainTextResponse("No encontrado", status_code=404)
