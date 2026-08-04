@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-20 bg-white p-6 rounded-lg shadow">
+  {% if invalido %}
+    <h1 class="text-lg font-semibold mb-4">Enlace no válido</h1>
+    <p class="text-sm text-gray-600 mb-4">
+      Este enlace venció o ya fue usado. Los enlaces duran 30 minutos y sirven una sola vez.
+    </p>
+    <a href="/olvide-clave"
+       class="block text-center bg-gray-900 text-white rounded px-3 py-2">Pedir otro enlace</a>
+  {% else %}
+    <h1 class="text-lg font-semibold mb-1">Define tu clave</h1>
+    <p class="text-sm text-gray-500 mb-4">{{ email }}</p>
+    {% if error %}
+      <p class="text-red-600 text-sm mb-3">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/restablecer/{{ token }}">
+      <input type="password" name="password" placeholder="Clave nueva" required autofocus
+             class="w-full border rounded px-3 py-2 mb-3" />
+      <input type="password" name="password2" placeholder="Repite la clave" required
+             class="w-full border rounded px-3 py-2 mb-3" />
+      <button type="submit" class="w-full bg-gray-900 text-white rounded px-3 py-2">Guardar</button>
+    </form>
+    <p class="text-xs text-gray-500 mt-3">Mínimo 10 caracteres.</p>
+  {% endif %}
+</div>
+{% endblock %}

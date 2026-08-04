@@ -110,6 +110,102 @@ def logout():
     return resp
 
 
+MENSAJE_ENLACE = "Si el correo está registrado, te enviamos un enlace para restablecer tu clave."
+
+
+def _enviar_enlace_reset(email: str, token: str) -> None:
+    """Corre DESPUES de responder, no dentro del request. Recibe valores planos
+    y no el objeto ORM, porque para cuando esto se ejecuta la sesion de base de
+    datos ya se cerro.
+
+    Silencia los errores de SMTP a proposito: si el correo no sale, la persona
+    no debe enterarse por un 500, y el aviso queda en el log."""
+    cuerpo = (
+        f"Para definir tu clave de acceso al Libro de Compras, entra a este enlace:\n\n"
+        f"{BASE_URL}/restablecer/{token}\n\n"
+        f"El enlace vence en 30 minutos y sirve una sola vez.\n"
+        f"Si no pediste esto, ignora el correo: tu clave actual sigue funcionando.\n"
+    )
+    try:
+        gmail_sync.enviar_correo(email, "Restablecer tu clave · Libro de Compras", cuerpo)
+    except Exception as e:
+        log.error("No se pudo enviar el enlace de recuperacion a %s: %s", email, e)
+
+
+def _validar_clave_nueva(password: str, password2: str):
+    """Devuelve el mensaje de error, o None si esta bien."""
+    if password != password2:
+        return "Las dos claves no coinciden."
+    if len(password) < LARGO_MINIMO_CLAVE:
+        return f"La clave debe tener al menos {LARGO_MINIMO_CLAVE} caracteres."
+    if len(password) > LARGO_MAXIMO_CLAVE:
+        return "Esa clave es demasiado larga."
+    return None
+
+
+@app.get("/olvide-clave", response_class=HTMLResponse)
+def olvide_clave_form(request: Request):
+    return templates.TemplateResponse("olvide_clave.html", {"request": request, "usuario": None})
+
+
+@app.post("/olvide-clave", response_class=HTMLResponse)
+def olvide_clave_submit(request: Request, tareas: BackgroundTasks, email: str = Form(...),
+                        db: Session = Depends(get_db)):
+    u = usuarios.por_email(db, email)
+    # El turno se toma AQUI, dentro del request, y el envio se agenda para
+    # despues de responder. Si el correo se mandara aqui mismo, un correo con
+    # cuenta tardaria lo que tarda el SMTP y uno sin cuenta contestaria al
+    # instante: el mensaje seria el mismo pero el tiempo delataria cuales
+    # existen, que es justo lo que este flujo trata de no revelar.
+    if u and u.activo and usuarios.reclamar_envio_reset(db, u):
+        tareas.add_task(_enviar_enlace_reset, u.email, crear_token_reset(u))
+    return templates.TemplateResponse(
+        "olvide_clave.html", {"request": request, "usuario": None, "mensaje": MENSAJE_ENLACE}
+    )
+
+
+@app.get("/restablecer/{token}", response_class=HTMLResponse)
+def restablecer_form(request: Request, token: str, db: Session = Depends(get_db)):
+    u = leer_token_reset(token, db)
+    if u is None:
+        return templates.TemplateResponse(
+            "restablecer.html", {"request": request, "usuario": None, "invalido": True},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "restablecer.html", {"request": request, "usuario": None, "token": token, "email": u.email}
+    )
+
+
+@app.post("/restablecer/{token}", response_class=HTMLResponse)
+def restablecer_submit(request: Request, token: str, password: str = Form(...),
+                       password2: str = Form(...), db: Session = Depends(get_db)):
+    u = leer_token_reset(token, db)
+    if u is None:
+        return templates.TemplateResponse(
+            "restablecer.html", {"request": request, "usuario": None, "invalido": True},
+            status_code=400,
+        )
+
+    error = _validar_clave_nueva(password, password2)
+    if error:
+        return templates.TemplateResponse(
+            "restablecer.html",
+            {"request": request, "usuario": None, "token": token, "email": u.email, "error": error},
+            status_code=400,
+        )
+
+    # cambiar_clave devuelve False si otra peticion redimio el mismo enlace
+    # primero. En ese caso el enlace ya no sirve y hay que decirlo, no fingir
+    # que se guardo.
+    if not usuarios.cambiar_clave(db, u, password):
+        return templates.TemplateResponse(
+            "restablecer.html", {"request": request, "usuario": None, "invalido": True},
+            status_code=400,
+        )
+    return RedirectResponse("/login", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, mes: str = "", flash: str = "",
               usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):
