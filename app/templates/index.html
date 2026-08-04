@@ -138,6 +138,12 @@
   function mesActual() { return new URLSearchParams(location.search).get('mes') || ''; }
   const el = id => document.getElementById(id);
 
+  // Si la sesion vencio, fetch sigue el 303 de vuelta a /login y devuelve
+  // 200 con HTML en vez del JSON esperado. Detectarlo aqui evita que
+  // r.json() reviente en silencio (tragado por el .catch) dejando la
+  // barra de progreso congelada y los botones sin explicacion.
+  function sesionVencida(r) { return r.redirected && r.url.indexOf('/login') !== -1; }
+
   // Fabrica de barras de progreso reutilizable (sync y aceptar comparten logica)
   function progresoLive(cfg) {
     const panel = el(cfg.panel), bar = el(cfg.bar), label = el(cfg.label),
@@ -171,8 +177,11 @@
       }
     }
     function poll() {
-      fetch(cfg.estadoUrl).then(r => r.json()).then(function (s) {
-        if (s.running || s.terminado) render(s);
+      fetch(cfg.estadoUrl).then(function (r) {
+        if (sesionVencida(r)) { stop(); location.href = '/login'; return; }
+        return r.json();
+      }).then(function (s) {
+        if (s && (s.running || s.terminado)) render(s);
       }).catch(function () {});
     }
     function start() { if (timer) return; poll(); timer = setInterval(poll, 1200); }
@@ -190,7 +199,10 @@
   if (btnSync) {
     btnSync.addEventListener('click', function () {
       btnSync.disabled = true; btnSync.textContent = 'Sincronizando…';
-      fetch('/sync', { method: 'POST' }).then(r => r.json()).then(function () { sync.start(); })
+      fetch('/sync', { method: 'POST' }).then(function (r) {
+        if (sesionVencida(r)) { location.href = '/login'; return; }
+        return r.json();
+      }).then(function (s) { if (s) sync.start(); })
         .catch(function () { btnSync.disabled = false; btnSync.textContent = 'Actualizar ahora'; });
     });
   }
@@ -211,7 +223,11 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'mes=' + encodeURIComponent(mes)
-      }).then(r => r.json()).then(function (s) {
+      }).then(function (r) {
+        if (sesionVencida(r)) { location.href = '/login'; return; }
+        return r.json();
+      }).then(function (s) {
+        if (!s) return;
         if (s.vacio) { alert(s.mensaje || 'No hay pendientes.'); btnAceptar.disabled = false; btnAceptar.textContent = 'Aceptar'; return; }
         accept.start();
       }).catch(function () { btnAceptar.disabled = false; btnAceptar.textContent = 'Aceptar'; });
@@ -219,11 +235,17 @@
   }
 
   // Si al abrir la pagina ya hay un proceso en curso, retomar la barra correspondiente
-  fetch('/sync/estado').then(r => r.json()).then(function (s) {
-    if (s.running) { if (btnSync) { btnSync.disabled = true; btnSync.textContent = 'Sincronizando…'; } sync.start(); }
+  fetch('/sync/estado').then(function (r) {
+    if (sesionVencida(r)) { location.href = '/login'; return; }
+    return r.json();
+  }).then(function (s) {
+    if (s && s.running) { if (btnSync) { btnSync.disabled = true; btnSync.textContent = 'Sincronizando…'; } sync.start(); }
   }).catch(function () {});
-  fetch('/aceptar-mes/estado').then(r => r.json()).then(function (s) {
-    if (s.running) { if (btnAceptar) { btnAceptar.disabled = true; btnAceptar.textContent = 'Aceptando…'; } accept.start(); }
+  fetch('/aceptar-mes/estado').then(function (r) {
+    if (sesionVencida(r)) { location.href = '/login'; return; }
+    return r.json();
+  }).then(function (s) {
+    if (s && s.running) { if (btnAceptar) { btnAceptar.disabled = true; btnAceptar.textContent = 'Aceptando…'; } accept.start(); }
   }).catch(function () {});
 })();
 </script>

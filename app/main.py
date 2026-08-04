@@ -1,4 +1,5 @@
 import io
+import logging
 import threading
 import zipfile
 from collections import defaultdict
@@ -18,7 +19,17 @@ from app import gmail_sync, mantenedor, usuarios
 from app.usuarios import Resultado, LARGO_MINIMO_CLAVE
 from app.excel_export import build_workbook
 
-app = FastAPI(title="GridWorks Contabilidad")
+log = logging.getLogger("gridworks")
+
+# Cota superior de la clave enviada en el login: hashear es caro (scrypt) y el
+# campo es publico, asi que una entrada absurdamente larga se rechaza antes de
+# gastar ese costo.
+LARGO_MAXIMO_CLAVE = 200
+
+# /docs, /redoc y /openapi.json quedan desactivados: en un host que sirve
+# facturas no tiene sentido publicar toda la superficie de la API (rutas de
+# PDF, exportacion, aceptacion) ni dejar una consola "Try it out" abierta.
+app = FastAPI(title="GridWorks Contabilidad", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory="app/templates")
 
 
@@ -28,9 +39,15 @@ def on_startup():
     db = SessionLocal()
     try:
         mantenedor.ensure_seed(db)
-        sembrado = usuarios.sembrar_admin_inicial(db)
-        if sembrado:
-            print(f"[arranque] Cuenta inicial creada: {sembrado.email}")
+        try:
+            sembrado = usuarios.sembrar_admin_inicial(db)
+            if sembrado:
+                log.info("Cuenta inicial creada: %s", sembrado.email)
+        except Exception as e:
+            # La siembra es una comodidad de arranque, no una condicion para
+            # servir. Si falla, la aplicacion igual tiene que levantar: caerse
+            # aqui dejaria el sitio entero abajo por no poder crear una cuenta.
+            log.error("No se pudo crear la cuenta inicial: %s", e)
     finally:
         db.close()
 
@@ -56,6 +73,16 @@ def login_form(request: Request, db: Session = Depends(get_db)):
 @app.post("/login")
 def login_submit(request: Request, email: str = Form(...), password: str = Form(...),
                  db: Session = Depends(get_db)):
+    if len(password) > LARGO_MAXIMO_CLAVE:
+        # Mismo mensaje generico que cualquier otra falla: no delata que el
+        # largo fue el motivo, y se evita el costo de scrypt en una entrada
+        # que ya se sabe invalida.
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "usuario": None, "error": "Correo o clave incorrectos.", "email": email},
+            status_code=401,
+        )
+
     resultado, u = usuarios.autenticar(db, email, password)
 
     if resultado is Resultado.OK:
