@@ -21,7 +21,12 @@ from app.usuarios import Resultado, LARGO_MINIMO_CLAVE
 from app.security import verify_password
 from app.excel_export import build_workbook
 
-log = logging.getLogger("gridworks")
+# Se cuelga del logger de uvicorn y no de uno propio: uvicorn le configura un
+# handler a nivel INFO, mientras que un logger nuevo hereda el root, que no
+# tiene handler y descarta todo lo que sea menor a WARNING. Con un logger
+# propio los avisos de arranque (cuenta inicial creada, BASE_URL) no salian por
+# ninguna parte, que es justo lo que se mira para verificar un despliegue.
+log = logging.getLogger("uvicorn.error")
 
 # Cota superior de la clave enviada en el login: hashear es caro (scrypt) y el
 # campo es publico, asi que una entrada absurdamente larga se rechaza antes de
