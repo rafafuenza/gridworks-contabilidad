@@ -276,6 +276,23 @@ def _validar_invitacion(email: str, nombre: str):
     return None
 
 
+def _resolver_objetivo(db: Session, usuario_id: str):
+    """Devuelve el Usuario del id recibido en el form, o None si el valor no
+    es un id valido o no existe. usuario_id llega como texto de un
+    <input type="hidden">, asi que puede venir vacio, no numerico, o un
+    numero gigante: ninguno de esos casos debe tumbar la ruta con un 500 (el
+    mismo tope que app/auth.py aplica al id de la cookie, porque un entero
+    valido en Python pero mas grande que un INTEGER de la base revienta el
+    driver con OverflowError/DataError)."""
+    try:
+        objetivo_id = int(usuario_id)
+    except ValueError:
+        return None
+    if not 0 < objetivo_id < 2 ** 31:
+        return None
+    return db.query(Usuario).filter(Usuario.id == objetivo_id).first()
+
+
 def _pantalla_usuarios(request, db, usuario, mensaje=None, error=None, status=200):
     filas = db.query(Usuario).order_by(Usuario.email).all()
     return templates.TemplateResponse(
@@ -310,19 +327,12 @@ def usuarios_accion(request: Request, tareas: BackgroundTasks, accion: str = For
         tareas.add_task(_enviar_enlace_reset, nuevo.email, crear_token_reset(nuevo))
         return _pantalla_usuarios(
             request, db, usuario,
-            mensaje=f"Cuenta creada. Le enviamos a {nuevo.email} un enlace para definir su clave."
+            mensaje=(f"Cuenta creada. Le enviaremos a {nuevo.email} un enlace para definir su clave. "
+                     "Si no le llega, puede pedirlo con 'Olvidé mi clave'.")
         )
 
     if accion == "desactivar":
-        # usuario_id llega como texto de un <input type="hidden">: un valor no
-        # numerico (manipulado o corrupto) no debe tumbar la ruta con un 500,
-        # se trata igual que un id que no existe.
-        try:
-            objetivo_id = int(usuario_id)
-        except ValueError:
-            return _pantalla_usuarios(request, db, usuario, error="Cuenta no encontrada.", status=404)
-
-        objetivo = db.query(Usuario).filter(Usuario.id == objetivo_id).first()
+        objetivo = _resolver_objetivo(db, usuario_id)
         if objetivo is None:
             return _pantalla_usuarios(request, db, usuario, error="Cuenta no encontrada.", status=404)
         if objetivo.id == usuario.id:
@@ -330,6 +340,23 @@ def usuarios_accion(request: Request, tareas: BackgroundTasks, accion: str = For
                                       error="No puedes dar de baja tu propia cuenta.", status=400)
         usuarios.desactivar(db, objetivo)
         return _pantalla_usuarios(request, db, usuario, mensaje=f"{objetivo.email} quedó sin acceso.")
+
+    if accion == "reactivar":
+        objetivo = _resolver_objetivo(db, usuario_id)
+        if objetivo is None:
+            return _pantalla_usuarios(request, db, usuario, error="Cuenta no encontrada.", status=404)
+        # No hace falta subir token_version de nuevo: desactivar() ya lo subio,
+        # asi que las sesiones y enlaces de antes de la baja siguen muertos.
+        # La clave anterior sigue funcionando (cambiar_clave no se llama aqui),
+        # pero se manda igual un enlace nuevo: es la opcion amable y no cuesta nada.
+        objetivo.activo = True
+        db.commit()
+        tareas.add_task(_enviar_enlace_reset, objetivo.email, crear_token_reset(objetivo))
+        return _pantalla_usuarios(
+            request, db, usuario,
+            mensaje=(f"{objetivo.email} recuperó el acceso. Le enviaremos un enlace para definir su "
+                     "clave. Si no le llega, puede pedirlo con 'Olvidé mi clave'.")
+        )
 
     return _pantalla_usuarios(request, db, usuario, error="Acción desconocida.", status=400)
 

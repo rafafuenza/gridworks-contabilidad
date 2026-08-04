@@ -496,7 +496,7 @@ def test_usuarios_sin_sesion_manda_al_login(client):
 
 def test_invitar_crea_la_cuenta_y_agenda_el_correo(client, db, usuario, monkeypatch):
     cuerpos = []
-    _parchar_envio(monkeypatch, cuerpos)
+    llamadas = _parchar_envio(monkeypatch, cuerpos)
     _con_sesion(client, usuario)
 
     resp = client.post("/usuarios", data={"accion": "invitar", "email": "nueva@gridworks.cl",
@@ -508,6 +508,11 @@ def test_invitar_crea_la_cuenta_y_agenda_el_correo(client, db, usuario, monkeypa
     assert creado is not None
     assert creado.nombre == "Nueva Persona"
     assert creado.activo is True
+    # El destinatario debe ser la cuenta recien creada, no quien la invito: si
+    # la ruta mandara el enlace al correo de quien esta logueado (bug de
+    # copiar/pegar entre nuevo.email y usuario.email), esta aseveracion es la
+    # unica que lo detecta.
+    assert llamadas == ["nueva@gridworks.cl"]
     assert len(cuerpos) == 1
 
 
@@ -619,9 +624,84 @@ def test_desactivar_con_id_inexistente_da_no_encontrado(client, usuario):
     assert resp.status_code == 404
 
 
+def test_desactivar_con_usuario_id_gigante_da_no_encontrado_no_500(client, usuario):
+    """int("9" * 30) no lanza ValueError (Python soporta enteros arbitrarios),
+    pero pasado tal cual a la consulta contra un INTEGER de la base revienta
+    (OverflowError en SQLite). Debe tratarse igual que un id que no existe,
+    no como un 500."""
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "desactivar", "usuario_id": "9" * 30})
+
+    assert resp.status_code == 404
+    assert "no encontrada" in resp.text.lower()
+
+
 def test_accion_desconocida_da_400(client, usuario):
     _con_sesion(client, usuario)
 
     resp = client.post("/usuarios", data={"accion": "volar"})
 
     assert resp.status_code == 400
+
+
+def test_el_correo_invitado_no_puede_cerrar_el_string_de_js_en_confirm(client, db, usuario, monkeypatch):
+    """usuarios.html interpola u.email dentro de un string de JS dentro del
+    atributo onsubmit. Jinja escapa la comilla simple a &#39;, pero el
+    navegador decodifica esa entidad ANTES de interpretar el atributo como
+    JS: la comilla vuelve a ser real y cierra el string dentro de confirm().
+    Un correo como a'-alert(1)-'@x.cl pasa _PATRON_EMAIL igual (solo excluye
+    '@' y espacios). Se prueba que la pagina no contenga la secuencia que
+    cerraria el string de JS ni su version en entidad HTML."""
+    _parchar_envio(monkeypatch)
+    _con_sesion(client, usuario)
+    payload = "a'-alert(1)-'@x.cl"
+
+    resp_post = client.post("/usuarios", data={"accion": "invitar", "email": payload, "nombre": ""})
+    assert resp_post.status_code == 200
+
+    resp = client.get("/usuarios")
+    assert resp.status_code == 200
+    assert usuarios.por_email(db, payload) is not None  # la cuenta si se creo
+
+    # El correo tambien aparece escapado con &#39; en la celda de texto plano
+    # de la tabla (eso es normal y no es explotable: ahi no hay JS). Lo que
+    # importa es el contenido del atributo onsubmit, asi que se aisla ese
+    # atributo en vez de buscar en la pagina entera.
+    m = re.search(r"onsubmit='(.*?)'", resp.text, re.DOTALL)
+    assert m, "no se encontro el atributo onsubmit del boton Dar de baja"
+    atributo = m.group(1)
+
+    # Si el correo se interpolara sin |tojson (o con la variante que usa un
+    # atributo onsubmit entre comillas dobles), apareceria aqui la secuencia
+    # que cierra el string de JS: una comilla real o &#39; (que el navegador
+    # decodifica a comilla real ANTES de interpretar el atributo como JS).
+    assert "&#39;" not in atributo
+    assert "\\u0027" in atributo  # el payload sigue presente, pero escapado por tojson
+
+
+def test_reactivar_devuelve_el_acceso_y_manda_un_enlace_nuevo(client, db, usuario, monkeypatch):
+    llamadas = _parchar_envio(monkeypatch)
+    objetivo = usuarios.crear(db, "otra@gridworks.cl", nombre="Otra", clave="clave-larga-2")
+    usuarios.desactivar(db, objetivo)
+    resultado_dado_de_baja, _ = usuarios.autenticar(db, "otra@gridworks.cl", "clave-larga-2")
+    assert resultado_dado_de_baja is usuarios.Resultado.INACTIVO
+
+    _con_sesion(client, usuario)
+    resp = client.post("/usuarios", data={"accion": "reactivar", "usuario_id": str(objetivo.id)})
+
+    assert resp.status_code == 200
+    assert "recuperó el acceso" in resp.text
+    # La clave anterior sigue sirviendo: reactivar no la toca, solo vuelve a
+    # habilitar la cuenta y ofrece un enlace nuevo por si se perdio el viejo.
+    resultado, _ = usuarios.autenticar(db, "otra@gridworks.cl", "clave-larga-2")
+    assert resultado is usuarios.Resultado.OK
+    assert llamadas == ["otra@gridworks.cl"]
+
+
+def test_reactivar_con_id_inexistente_da_no_encontrado(client, usuario):
+    _con_sesion(client, usuario)
+
+    resp = client.post("/usuarios", data={"accion": "reactivar", "usuario_id": "999999"})
+
+    assert resp.status_code == 404

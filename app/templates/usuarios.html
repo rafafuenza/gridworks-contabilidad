@@ -50,10 +50,16 @@
       <td class="px-4 py-3">
         {% if u.activo and u.id != usuario.id %}
         <form method="post" action="/usuarios"
-              onsubmit="return confirm('¿Dar de baja a {{ u.email }}? Queda sin acceso de inmediato.')">
+              onsubmit='return confirm("¿Dar de baja a " + {{ u.email|tojson }} + "? Queda sin acceso de inmediato.")'>
           <input type="hidden" name="accion" value="desactivar" />
           <input type="hidden" name="usuario_id" value="{{ u.id }}" />
           <button type="submit" class="text-red-600 hover:underline">Dar de baja</button>
+        </form>
+        {% elif not u.activo %}
+        <form method="post" action="/usuarios">
+          <input type="hidden" name="accion" value="reactivar" />
+          <input type="hidden" name="usuario_id" value="{{ u.id }}" />
+          <button type="submit" class="text-green-700 hover:underline">Reactivar</button>
         </form>
         {% else %}
           <span class="text-gray-400">—</span>
