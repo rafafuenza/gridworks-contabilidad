@@ -17,6 +17,7 @@ from app.auth import (require_login, usuario_actual, create_session_cookie, crea
                       leer_token_reset, COOKIE_NAME, MAX_AGE)
 from app import gmail_sync, mantenedor, usuarios
 from app.usuarios import Resultado, LARGO_MINIMO_CLAVE
+from app.security import verify_password
 from app.excel_export import build_workbook
 
 log = logging.getLogger("gridworks")
@@ -214,6 +215,41 @@ def restablecer_submit(request: Request, token: str, password: str = Form(...),
             status_code=400,
         )
     return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/cuenta", response_class=HTMLResponse)
+def cuenta_form(request: Request, ok: str = "", usuario: Usuario = Depends(require_login)):
+    mensaje = "Tu clave quedó cambiada. Las sesiones en otros dispositivos se cerraron." if ok else None
+    return templates.TemplateResponse(
+        "cuenta.html", {"request": request, "usuario": usuario, "mensaje": mensaje}
+    )
+
+
+@app.post("/cuenta", response_class=HTMLResponse)
+def cuenta_submit(request: Request, actual: str = Form(...), password: str = Form(...),
+                  password2: str = Form(...), usuario: Usuario = Depends(require_login),
+                  db: Session = Depends(get_db)):
+    if not verify_password(actual, usuario.password_hash):
+        error = "Tu clave actual no es correcta."
+    else:
+        error = _validar_clave_nueva(password, password2)
+
+    if error:
+        return templates.TemplateResponse(
+            "cuenta.html", {"request": request, "usuario": usuario, "error": error}, status_code=400
+        )
+
+    if not usuarios.cambiar_clave(db, usuario, password):
+        return templates.TemplateResponse(
+            "cuenta.html",
+            {"request": request, "usuario": usuario,
+             "error": "Tu clave cambió desde otra pestaña. Vuelve a intentarlo."},
+            status_code=409,
+        )
+    # cambiar_clave subio token_version: hay que reemitir la cookie propia para
+    # no quedar afuera junto con las sesiones de los otros dispositivos.
+    resp = RedirectResponse("/cuenta?ok=1", status_code=303)
+    return _set_session(resp, usuario)
 
 
 @app.get("/", response_class=HTMLResponse)

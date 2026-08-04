@@ -363,3 +363,119 @@ def test_las_rutas_de_recuperacion_son_publicas(client, ruta):
     pueden estar detras de require_login (eso las mandaria al login otra vez)."""
     resp = client.get(ruta, follow_redirects=False)
     assert resp.status_code in (200, 400)
+
+
+# --- Mi cuenta (/cuenta) ---
+
+def test_cuenta_sin_sesion_manda_al_login(client):
+    resp = client.get("/cuenta", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
+def test_cambiar_la_clave_propia_funciona(client, db, usuario):
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+
+    resp = client.post(
+        "/cuenta",
+        data={"actual": "clave-larga-1", "password": "clave-nueva-larga-9",
+              "password2": "clave-nueva-larga-9"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/cuenta?ok=1"
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-nueva-larga-9")
+    assert resultado is usuarios.Resultado.OK
+
+
+def test_cambiar_la_clave_propia_no_cierra_la_sesion_actual(client, usuario):
+    """cambiar_clave sube token_version, lo que invalida la cookie con la que
+    se llego. La ruta debe reemitir la cookie propia, o la persona quedaria
+    afuera justo al cambiar su clave."""
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+
+    resp = client.post(
+        "/cuenta",
+        data={"actual": "clave-larga-1", "password": "clave-nueva-larga-9",
+              "password2": "clave-nueva-larga-9"},
+        follow_redirects=False,
+    )
+    assert auth.COOKIE_NAME in resp.cookies
+
+    assert client.get("/", follow_redirects=False).status_code == 200
+
+
+def test_cambiar_la_clave_propia_cierra_las_otras_sesiones(client, usuario):
+    """Una cookie tomada ANTES del cambio (otro dispositivo) debe dejar de
+    servir despues, aunque la sesion propia siga viva.
+
+    Se usa un TestClient nuevo para el "otro dispositivo": reutilizar el
+    mismo cliente causa un conflicto de cookies en httpx (el Set-Cookie de la
+    respuesta y el valor puesto a mano quedan con dominios distintos y no se
+    pisan entre si), lo que enmascararia justo lo que esta prueba busca
+    comprobar. Los dos clientes comparten la misma base de pruebas porque
+    el override de get_db ya esta activo a nivel de app."""
+    from fastapi.testclient import TestClient
+    from app.main import app as app_real
+
+    cookie_otro_dispositivo = auth.create_session_cookie(usuario)
+    otro_dispositivo = TestClient(app_real, raise_server_exceptions=False)
+    otro_dispositivo.cookies.set(auth.COOKIE_NAME, cookie_otro_dispositivo)
+    assert otro_dispositivo.get("/", follow_redirects=False).status_code == 200
+
+    client.cookies.set(auth.COOKIE_NAME, cookie_otro_dispositivo)
+    client.post(
+        "/cuenta",
+        data={"actual": "clave-larga-1", "password": "clave-nueva-larga-9",
+              "password2": "clave-nueva-larga-9"},
+        follow_redirects=False,
+    )
+
+    resp = otro_dispositivo.get("/", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
+def test_cuenta_con_clave_actual_mala_no_cambia_nada(client, db, usuario):
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+
+    resp = client.post(
+        "/cuenta",
+        data={"actual": "equivocada", "password": "clave-nueva-larga-9",
+              "password2": "clave-nueva-larga-9"},
+    )
+
+    assert resp.status_code == 400
+    assert "clave actual" in resp.text.lower()
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is usuarios.Resultado.OK
+
+
+def test_cuenta_clave_nueva_muy_corta_no_cambia_nada(client, db, usuario):
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+
+    resp = client.post(
+        "/cuenta",
+        data={"actual": "clave-larga-1", "password": "corta", "password2": "corta"},
+    )
+
+    assert resp.status_code == 400
+    assert "al menos" in resp.text
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is usuarios.Resultado.OK
+
+
+def test_cuenta_claves_nuevas_no_coinciden_no_cambia_nada(client, db, usuario):
+    client.cookies.set(auth.COOKIE_NAME, auth.create_session_cookie(usuario))
+
+    resp = client.post(
+        "/cuenta",
+        data={"actual": "clave-larga-1", "password": "clave-nueva-larga-9",
+              "password2": "otra-clave-larga-distinta"},
+    )
+
+    assert resp.status_code == 400
+    assert "no coinciden" in resp.text
+    resultado, _ = usuarios.autenticar(db, "rafael@gridworks.cl", "clave-larga-1")
+    assert resultado is usuarios.Resultado.OK
