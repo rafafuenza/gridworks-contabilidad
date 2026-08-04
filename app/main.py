@@ -26,6 +26,11 @@ log = logging.getLogger("gridworks")
 # gastar ese costo.
 LARGO_MAXIMO_CLAVE = 200
 
+# 320 es el largo maximo practico de una direccion de correo (RFC 5321). Un
+# valor mas largo no puede ser una cuenta real, asi que se corta antes de
+# tocar la base.
+LARGO_MAXIMO_EMAIL = 320
+
 # /docs, /redoc y /openapi.json quedan desactivados: en un host que sirve
 # facturas no tiene sentido publicar toda la superficie de la API (rutas de
 # PDF, exportacion, aceptacion) ni dejar una consola "Try it out" abierta.
@@ -36,6 +41,7 @@ templates = Jinja2Templates(directory="app/templates")
 @app.on_event("startup")
 def on_startup():
     init_db()
+    log.info("BASE_URL para los enlaces de correo: %s", BASE_URL)
     db = SessionLocal()
     try:
         mantenedor.ensure_seed(db)
@@ -151,14 +157,18 @@ def olvide_clave_form(request: Request):
 @app.post("/olvide-clave", response_class=HTMLResponse)
 def olvide_clave_submit(request: Request, tareas: BackgroundTasks, email: str = Form(...),
                         db: Session = Depends(get_db)):
-    u = usuarios.por_email(db, email)
-    # El turno se toma AQUI, dentro del request, y el envio se agenda para
-    # despues de responder. Si el correo se mandara aqui mismo, un correo con
-    # cuenta tardaria lo que tarda el SMTP y uno sin cuenta contestaria al
-    # instante: el mensaje seria el mismo pero el tiempo delataria cuales
-    # existen, que es justo lo que este flujo trata de no revelar.
-    if u and u.activo and usuarios.reclamar_envio_reset(db, u):
-        tareas.add_task(_enviar_enlace_reset, u.email, crear_token_reset(u))
+    # Una entrada mas larga que un correo real no puede tener cuenta, asi que
+    # se corta antes de consultar la base. No se distingue esta salida de las
+    # demas: mismo mensaje, misma forma de respuesta.
+    if len(email) <= LARGO_MAXIMO_EMAIL:
+        u = usuarios.por_email(db, email)
+        # El turno se toma AQUI, dentro del request, y el envio se agenda para
+        # despues de responder. Si el correo se mandara aqui mismo, un correo
+        # con cuenta tardaria lo que tarda el SMTP y uno sin cuenta contestaria
+        # al instante: el mensaje seria el mismo pero el tiempo delataria
+        # cuales existen, que es justo lo que este flujo trata de no revelar.
+        if u and u.activo and usuarios.reclamar_envio_reset(db, u):
+            tareas.add_task(_enviar_enlace_reset, u.email, crear_token_reset(u))
     return templates.TemplateResponse(
         "olvide_clave.html", {"request": request, "usuario": None, "mensaje": MENSAJE_ENLACE}
     )

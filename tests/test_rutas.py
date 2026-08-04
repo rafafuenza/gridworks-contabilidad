@@ -1,6 +1,8 @@
 import re
 
 import pytest
+from fastapi import BackgroundTasks
+from starlette.requests import Request
 
 from app import auth, main, usuarios
 
@@ -169,6 +171,46 @@ def test_olvide_clave_responde_igual_con_o_sin_cuenta(client, usuario, monkeypat
     assert llamadas == ["rafael@gridworks.cl"]
 
 
+def _request_falso():
+    """Un Request real construido a mano, no un stub: TemplateResponse (via
+    Jinja2Templates) necesita un Request de verdad, y TestClient no sirve aqui
+    porque drena las BackgroundTasks antes de devolver la respuesta, lo que
+    esconde justo la diferencia que esta prueba necesita ver."""
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/olvide-clave",
+        "headers": [],
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "scheme": "http",
+        "client": ("testclient", 123),
+        "app": main.app,
+    }
+    return Request(scope)
+
+
+def test_el_envio_queda_agendado_y_no_ocurre_dentro_del_request(db, monkeypatch):
+    """Si el correo se mandara dentro del request, un correo con cuenta
+    tardaria lo que tarda el SMTP y uno sin cuenta contestaria al instante:
+    el tiempo delataria cuales existen aunque el mensaje sea el mismo.
+
+    Se llama a la funcion de ruta directamente, sin pasar por TestClient: el
+    cliente de pruebas drena las BackgroundTasks antes de devolver la
+    respuesta, asi que desde su punto de vista mandar en linea o agendar se
+    ven identicos. Esta prueba existe para que una edicion futura que mueva
+    el envio adentro del request la rompa."""
+    llamadas = []
+    monkeypatch.setattr(main.gmail_sync, "enviar_correo", lambda *a, **k: llamadas.append(a))
+    usuarios.crear(db, "rafael@gridworks.cl", clave="clave-larga-1")
+    tareas = BackgroundTasks()
+
+    main.olvide_clave_submit(_request_falso(), tareas, email="rafael@gridworks.cl", db=db)
+
+    assert llamadas == []          # todavia no se mando nada
+    assert len(tareas.tasks) == 1  # quedo agendado para despues de responder
+
+
 def test_pedir_el_enlace_dos_veces_seguidas_no_reenvia(client, usuario, monkeypatch):
     """El freno de 5 minutos se toma dentro del request; la segunda peticion
     no debe agendar un segundo envio, pero igual debe mostrar el mismo mensaje
@@ -190,6 +232,36 @@ def test_si_el_smtp_revienta_igual_responde_200_con_el_mismo_mensaje(client, usu
     monkeypatch.setattr(main.gmail_sync, "enviar_correo", _reventar)
 
     resp = client.post("/olvide-clave", data={"email": "rafael@gridworks.cl"})
+
+    assert resp.status_code == 200
+    assert main.MENSAJE_ENLACE in resp.text
+
+
+def test_cuenta_dada_de_baja_no_recibe_enlace_pero_ve_el_mismo_mensaje(client, db, usuario, monkeypatch):
+    """Quitar el chequeo de u.activo de la ruta dejaria todas las demas
+    pruebas en verde igual: esta prueba existe para cubrir justo esa rama."""
+    llamadas = _parchar_envio(monkeypatch)
+    usuarios.desactivar(db, usuario)
+
+    resp = client.post("/olvide-clave", data={"email": "rafael@gridworks.cl"})
+
+    assert resp.status_code == 200
+    assert main.MENSAJE_ENLACE in resp.text
+    assert llamadas == []
+
+
+def test_correo_demasiado_largo_no_consulta_la_base(client, monkeypatch):
+    """Un correo mas largo que LARGO_MAXIMO_EMAIL no puede ser una cuenta real,
+    asi que la ruta debe cortar antes de llamar a por_email. Se prueba
+    parchando por_email para que reviente si se llegara a invocar, igual que
+    se hace con autenticar en /login."""
+    def _por_email_no_deberia_llamarse(*args, **kwargs):
+        raise AssertionError("por_email no deberia llamarse con un correo demasiado largo")
+
+    monkeypatch.setattr(usuarios, "por_email", _por_email_no_deberia_llamarse)
+
+    correo_larguisimo = "a" * 400 + "@gridworks.cl"
+    resp = client.post("/olvide-clave", data={"email": correo_larguisimo})
 
     assert resp.status_code == 200
     assert main.MENSAJE_ENLACE in resp.text
