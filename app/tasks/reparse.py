@@ -17,18 +17,30 @@ from app.parsers import registry
 from app import mantenedor
 
 
-def reparse_all() -> dict:
+def reparse_all(progress: dict = None) -> dict:
+    """progress: dict opcional que se va actualizando en vivo (mismo contrato que
+    gmail_sync.sync), para que la barra de la web pueda seguir el avance. El
+    total se sabe de entrada porque las facturas ya estan en la base."""
     init_db()
     db = SessionLocal()
     mantenedor.ensure_seed(db)
-    stats = {"total": 0, "revision_manual": 0, "falta_proveedor": 0, "sin_pdf": 0,
-             "errores": 0, "tc_consultados": 0}
+    stats = {"total": 0, "procesados": 0, "revision_manual": 0, "falta_proveedor": 0,
+             "sin_pdf": 0, "errores": 0, "tc_consultados": 0}
+
+    def avisar():
+        if progress is not None:
+            progress.update(stats)
+
     tc_cache = {}
     try:
-        for p in db.query(Purchase).order_by(Purchase.id).all():
-            stats["total"] += 1
+        filas = db.query(Purchase).order_by(Purchase.id).all()
+        stats["total"] = len(filas)
+        avisar()
+        for p in filas:
+            stats["procesados"] += 1
             if not p.pdf_data:
                 stats["sin_pdf"] += 1
+                avisar()
                 continue
             try:
                 text = _extract_pdf_text(p.pdf_data)
@@ -73,6 +85,7 @@ def reparse_all() -> dict:
             except Exception as e:
                 stats["errores"] += 1
                 print(f"  ! error en id={p.id}: {e}")
+            avisar()
         db.commit()
     finally:
         db.close()

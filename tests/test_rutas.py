@@ -12,7 +12,8 @@ def usuario(db):
     return usuarios.crear(db, "rafael@gridworks.cl", nombre="Rafael", clave="clave-larga-1")
 
 
-RUTAS_PROTEGIDAS = ["/", "/sync/estado", "/aceptar-mes/estado", "/export.xlsx", "/export/pdfs.zip", "/pdf/1"]
+RUTAS_PROTEGIDAS = ["/", "/sync/estado", "/aceptar-mes/estado", "/reparse/estado",
+                    "/export.xlsx", "/export/pdfs.zip", "/pdf/1"]
 
 
 @pytest.mark.parametrize("ruta", RUTAS_PROTEGIDAS)
@@ -75,6 +76,7 @@ RUTAS_POST_PROTEGIDAS = [
     ("/sync", {}),
     ("/aceptar-mes", {"mes": ""}),
     ("/aceptar/1", {"mes": ""}),
+    ("/reparse", {}),
 ]
 
 
@@ -705,3 +707,61 @@ def test_reactivar_con_id_inexistente_da_no_encontrado(client, usuario):
     resp = client.post("/usuarios", data={"accion": "reactivar", "usuario_id": "999999"})
 
     assert resp.status_code == 404
+
+
+# --- Re-parseo de los PDF guardados ---
+# Se prueba la maquina de estados sin lanzar el hilo: _run_reparse_bg se llama
+# derecho, con reparse_all reemplazado. Asi no hay que esperar a un thread ni
+# dejar que toque la base, y el resultado es determinista.
+
+@pytest.fixture(autouse=True)
+def _reparse_limpio():
+    """El estado del reparse es un dict de modulo, o sea global entre pruebas."""
+    original = dict(main._reparse_state)
+    yield
+    main._reparse_state.clear()
+    main._reparse_state.update(original)
+
+
+def test_reparse_deja_el_estado_terminado_y_el_resumen(monkeypatch):
+    def falso_reparse(progress=None):
+        stats = {"total": 104, "procesados": 104, "revision_manual": 0,
+                 "falta_proveedor": 1, "sin_pdf": 0, "errores": 0, "tc_consultados": 2}
+        if progress is not None:
+            progress.update(stats)
+        return stats
+
+    monkeypatch.setattr("app.tasks.reparse.reparse_all", falso_reparse)
+    main._run_reparse_bg()
+
+    assert main._reparse_state["running"] is False
+    assert main._reparse_state["terminado"] is True
+    assert main._reparse_state["total"] == 104
+    assert "Total 104" in main._reparse_state["mensaje"]
+    assert "falta proveedor 1" in main._reparse_state["mensaje"]
+
+
+def test_si_reparse_revienta_el_estado_no_queda_colgado(monkeypatch):
+    """Sin el finally, running se quedaria en True para siempre y el boton
+    nunca volveria a habilitarse en ninguna sesion."""
+    def reventar(progress=None):
+        raise RuntimeError("base caida")
+
+    monkeypatch.setattr("app.tasks.reparse.reparse_all", reventar)
+    main._reparse_state["running"] = True
+    main._run_reparse_bg()
+
+    assert main._reparse_state["running"] is False
+    assert main._reparse_state["terminado"] is True
+    assert "base caida" in main._reparse_state["mensaje"]
+
+
+def test_no_se_puede_lanzar_un_reparse_sobre_otro_en_curso(client, usuario):
+    """Dos reparse en paralelo escribirian las mismas filas a la vez."""
+    _con_sesion(client, usuario)
+    main._reparse_state["running"] = True
+
+    resp = client.post("/reparse")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"running": True, "ya_en_curso": True}

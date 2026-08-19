@@ -112,14 +112,24 @@ otra vez.
 venv/Scripts/python -m pytest tests/ -v
 ```
 
-115 pruebas. Para que corran rapido, la suite baja el costo de scrypt durante
+138 pruebas. Para que corran rapido, la suite baja el costo de scrypt durante
 la ejecucion; un par de pruebas puntuales lo suben de vuelta al costo real de
 produccion para verificar ese camino tambien.
 
 ## Uso
 
 - Entrar con tu correo y tu clave (ver "Acceso" arriba).
-- Boton **Actualizar ahora**: corre la sincronizacion on-demand.
+- Boton **Actualizar ahora**: corre la sincronizacion on-demand (va a Gmail a
+  buscar facturas nuevas).
+- Boton **Re-parsear**: vuelve a leer los PDF **ya guardados** y recalcula sus
+  datos. No consulta Gmail y respeta el estado de las ya declaradas. Es lo que
+  hay que apretar despues de agregar o corregir un parser: el deploy solo cambia
+  como se leen las facturas *futuras*, las que ya estan en la base conservan lo
+  que extrajo el parser viejo hasta que se re-parsean.
+  Equivale a `python -m app.tasks.reparse`, pero corriendo dentro del contenedor.
+  Ojo: `railway run python -m app.tasks.reparse` **no** sirve desde una maquina
+  local, porque ejecuta ahi y el `DATABASE_URL` apunta a la red privada de
+  Railway; para eso esta el boton (o `railway ssh`).
 - Selector de mes + **Descargar Excel**: genera el Libro de Compras del mes
   elegido (o todos).
 - **Descargar PDFs**: zip con las facturas originales del mes elegido.

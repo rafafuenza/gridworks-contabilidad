@@ -437,6 +437,52 @@ def sync_estado(request: Request, usuario: Usuario = Depends(require_login)):
     return JSONResponse(_sync_state)
 
 
+# --- Re-parseo de los PDF ya guardados (mismo patron que el sync) ---
+# Existe como boton y no solo como comando porque `railway run` corre en la
+# maquina de quien lo invoca, y ahi el DATABASE_URL apunta a un host de la red
+# privada de Railway que no resuelve desde afuera. Desde este endpoint corre
+# dentro del contenedor, que es donde si resuelve.
+_reparse_state = {"running": False, "terminado": False, "total": 0, "procesados": 0,
+                  "revision_manual": 0, "falta_proveedor": 0, "sin_pdf": 0, "errores": 0,
+                  "tc_consultados": 0, "mensaje": ""}
+_reparse_lock = threading.Lock()
+
+
+def _run_reparse_bg():
+    from app.tasks.reparse import reparse_all
+
+    try:
+        stats = reparse_all(progress=_reparse_state)
+        _reparse_state["mensaje"] = (
+            f"Listo. Total {stats['total']}, en revision {stats['revision_manual']}, "
+            f"falta proveedor {stats['falta_proveedor']}, sin pdf {stats['sin_pdf']}, "
+            f"errores {stats['errores']}."
+        )
+    except Exception as e:
+        _reparse_state["mensaje"] = f"Error al re-parsear: {e}"
+    finally:
+        _reparse_state["running"] = False
+        _reparse_state["terminado"] = True
+
+
+@app.post("/reparse")
+def trigger_reparse(request: Request, usuario: Usuario = Depends(require_login)):
+    with _reparse_lock:
+        if _reparse_state["running"]:
+            return JSONResponse({"running": True, "ya_en_curso": True})
+        _reparse_state.update({"running": True, "terminado": False, "total": 0, "procesados": 0,
+                               "revision_manual": 0, "falta_proveedor": 0, "sin_pdf": 0,
+                               "errores": 0, "tc_consultados": 0,
+                               "mensaje": "Leyendo los PDF guardados..."})
+    threading.Thread(target=_run_reparse_bg, daemon=True).start()
+    return JSONResponse({"running": True})
+
+
+@app.get("/reparse/estado")
+def reparse_estado(request: Request, usuario: Usuario = Depends(require_login)):
+    return JSONResponse(_reparse_state)
+
+
 @app.post("/aceptar/{purchase_id}")
 def aceptar_uno(request: Request, purchase_id: int, mes: str = Form(""),
                 usuario: Usuario = Depends(require_login), db: Session = Depends(get_db)):

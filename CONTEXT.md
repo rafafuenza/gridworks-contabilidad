@@ -185,9 +185,17 @@ Detalles del sync:
     convencion chilena en cuanto veia una coma y leia `$6,800.00` como **6.8**.
   - Hay una **capa de validacion** en el registry: si falta numero/total o si
     `afecto+exento+iva` no cuadra con `total`, marca `revision_manual`.
-  - **Re-parseo del historico**: `python -m app.tasks.reparse` re-aplica los
-    parsers sobre los PDFs ya guardados en la base (util al agregar parsers
-    nuevos o corregir bugs), sin volver a Gmail.
+  - **Re-parseo del historico**: re-aplica los parsers sobre los PDFs ya
+    guardados en la base (util al agregar parsers nuevos o corregir bugs), sin
+    volver a Gmail. Hay dos caminos: el boton **Re-parsear** en la web y
+    `python -m app.tasks.reparse` por consola. **Es un paso obligatorio**: un
+    deploy con un parser nuevo no toca las facturas que ya estan en la base, asi
+    que la pagina se sigue viendo igual hasta que se re-parsea.
+    `railway run python -m app.tasks.reparse` **no** funciona desde una maquina
+    local: `railway run` inyecta las variables pero ejecuta localmente, y el
+    `DATABASE_URL` de produccion apunta a `postgres.railway.internal`, que solo
+    resuelve dentro de Railway. Por eso existe el boton (que corre dentro del
+    contenedor); la alternativa por consola es `railway ssh`.
 - **AWS cobra 19% (IVA chileno)** en su factura. Queda con RUT generico
   extranjero y una nota: falta verificar su RUT en la nomina IVA digital del SII
   y confirmar con el contador si ese IVA es recuperable (en B2B el tratamiento

@@ -27,6 +27,17 @@
   <div id="accept-detail" class="text-xs text-green-800 mt-2"></div>
 </div>
 
+<div id="reparse-panel" class="hidden mb-4 p-4 rounded bg-amber-50 border border-amber-200">
+  <div class="flex justify-between text-sm text-amber-900 mb-2">
+    <span id="reparse-label">Re-parseando…</span>
+    <span id="reparse-count" class="font-mono"></span>
+  </div>
+  <div class="w-full bg-amber-100 rounded h-3 overflow-hidden">
+    <div id="reparse-bar" class="bg-amber-600 h-3 transition-all duration-300" style="width:0%"></div>
+  </div>
+  <div id="reparse-detail" class="text-xs text-amber-800 mt-2"></div>
+</div>
+
 <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
   <form method="get" action="/" class="flex items-end gap-2">
     <div>
@@ -42,6 +53,8 @@
 
   <div class="flex gap-2">
     <button id="btn-sync" type="button" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
+    <button id="btn-reparse" type="button" title="Vuelve a leer los PDF ya guardados y recalcula los datos. No consulta Gmail."
+            class="bg-amber-600 text-white rounded px-4 py-2 text-sm">Re-parsear</button>
     <button id="btn-aceptar" type="button" data-mes="{{ mes_seleccionado or '' }}"
             class="bg-blue-700 text-white rounded px-4 py-2 text-sm">Aceptar {{ mes_seleccionado or 'todo' }}</button>
     <a href="/export.xlsx?mes={{ mes_seleccionado or '' }}"
@@ -162,7 +175,7 @@
         bar.style.width = '100%';
         bar.classList.add('animate-pulse');
         count.textContent = '';
-        label.textContent = s.mensaje || 'Conectando a Gmail…';
+        label.textContent = s.mensaje || cfg.mensajeInicial || 'Conectando a Gmail…';
       }
       const partes = [];
       (cfg.detalle || []).forEach(function (d) { if (s[d[0]]) partes.push(s[d[0]] + ' ' + d[1]); });
@@ -234,6 +247,28 @@
     });
   }
 
+  // --- Re-parsear los PDF guardados ---
+  const reparse = progresoLive({
+    panel: 'reparse-panel', bar: 'reparse-bar', label: 'reparse-label', count: 'reparse-count',
+    detail: 'reparse-detail', estadoUrl: '/reparse/estado',
+    tituloActivo: 'Re-leyendo los PDF guardados…', tituloFin: 'Re-parseo completo',
+    mensajeInicial: 'Leyendo los PDF guardados…',
+    detalle: [['revision_manual', 'en revision'], ['falta_proveedor', 'sin proveedor'],
+              ['sin_pdf', 'sin pdf'], ['errores', 'errores']]
+  });
+  const btnReparse = el('btn-reparse');
+  if (btnReparse) {
+    btnReparse.addEventListener('click', function () {
+      if (!confirm('Volver a leer todos los PDF guardados y recalcular sus datos?\n\nNo consulta Gmail y no cambia el estado de las ya declaradas.')) return;
+      btnReparse.disabled = true; btnReparse.textContent = 'Re-parseando…';
+      fetch('/reparse', { method: 'POST' }).then(function (r) {
+        if (sesionVencida(r)) { location.href = '/login'; return; }
+        return r.json();
+      }).then(function (s) { if (s) reparse.start(); })
+        .catch(function () { btnReparse.disabled = false; btnReparse.textContent = 'Re-parsear'; });
+    });
+  }
+
   // Si al abrir la pagina ya hay un proceso en curso, retomar la barra correspondiente
   fetch('/sync/estado').then(function (r) {
     if (sesionVencida(r)) { location.href = '/login'; return; }
@@ -246,6 +281,12 @@
     return r.json();
   }).then(function (s) {
     if (s && s.running) { if (btnAceptar) { btnAceptar.disabled = true; btnAceptar.textContent = 'Aceptando…'; } accept.start(); }
+  }).catch(function () {});
+  fetch('/reparse/estado').then(function (r) {
+    if (sesionVencida(r)) { location.href = '/login'; return; }
+    return r.json();
+  }).then(function (s) {
+    if (s && s.running) { if (btnReparse) { btnReparse.disabled = true; btnReparse.textContent = 'Re-parseando…'; } reparse.start(); }
   }).catch(function () {});
 })();
 </script>
