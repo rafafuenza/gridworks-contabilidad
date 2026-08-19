@@ -1,0 +1,21 @@
+INVOICE
+BIO ANDES AMERICA DIGITAL LLC
+EIN 38-4191606
+8 The Green, Ste 4000
+Dover, Delaware 19901
+United States
+congreso.america-digital.com
+BILL TO Invoice Number: 1404
+Gridworks SpA Invoice Date: August 7, 2026
+RUT:78.453.294-1
+Payment Due: August 20, 2026
+30 Oriente 1528, Of. 315
+Talca, Amount Due (USD): $6,800.00
+Chile
+Items Quantity Price Amount
+11º Congreso America Digital Latam 2026 1 $6,800.00 $6,800.00
+Stand Silver
+Tarifa USD 6.800,00
+Pago al 20 de Agosto, 2026
+Total: $6,800.00
+Amount Due (USD): $6,800.00

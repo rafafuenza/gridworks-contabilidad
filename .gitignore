@@ -7,3 +7,6 @@ venv/
 .DS_Store
 *.db
 *.db-journal
+
+# PDFs reales de facturas para diagnosticar en local: no se suben.
+facturas_pendientes/

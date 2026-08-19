@@ -198,6 +198,9 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     text = "\n".join(text_parts)
     # Algunos PDFs (fuentes custom) traen NUL en vez de espacios/guiones
     text = text.replace("\x00", " ")
+    # Los DTE nacionales vienen con saltos CRLF: se normalizan para que los
+    # parsers puedan anclar con \n sin arrastrar un \r al final del match.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text
 
 

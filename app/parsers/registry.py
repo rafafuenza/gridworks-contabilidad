@@ -4,14 +4,16 @@ re-parsear PDFs ya guardados) y ejecuta su parser.
 
 El RUT y el tratamiento NO viven aca: los aporta el mantenedor de proveedores
 (app/mantenedor.py) cruzando por `provider_key`. Aca solo esta la logica de
-deteccion y extraccion. Agregar un proveedor = una entrada en PROVIDERS (si usa
-la plantilla Stripe, reusa stripe_invoice.parse) + su fila en el mantenedor.
+deteccion y extraccion. Agregar un proveedor = una entrada en PROVIDERS + su
+fila en el mantenedor; casi nunca hay que escribir un parser, porque los dos
+formatos que se repiten ya tienen uno compartido: `stripe_invoice.parse` para
+el SaaS extranjero y `dte_nacional.parse` para la factura electronica chilena.
 """
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 from app.parsers.base import ParsedInvoice
-from app.parsers import stripe_invoice, aws, hetzner, nic, generic
+from app.parsers import stripe_invoice, dte_nacional, aws, hetzner, nic, bio_andes, generic
 
 
 @dataclass
@@ -21,6 +23,7 @@ class ProviderConfig:
     detect: Callable[[str], bool]        # True si el PDF es de este proveedor
     parser: Callable[[str], ParsedInvoice]
     nota: Optional[str] = None           # nota informativa que se adjunta siempre
+    revisar: bool = False                # plantilla conocida pero emisor sin config propia
 
 
 # Orden importa: proveedores con config propia primero; el Stripe generico
@@ -57,14 +60,36 @@ PROVIDERS = [
         detect=lambda t: nic.FINGERPRINT in t,
         parser=nic.parse,
     ),
-    # SaaS con plantilla Stripe pero sin config propia todavia: se parsea igual,
-    # pero queda marcado para revision para que se le agregue una entrada arriba.
+    ProviderConfig(
+        key="praxedis",
+        display_name="PRAXEDIS SPA",
+        detect=lambda t: "PRAXEDIS" in t.upper() and dte_nacional.looks_like_dte(t),
+        parser=dte_nacional.parse,
+    ),
+    ProviderConfig(
+        key="bio-andes",
+        display_name="BIO ANDES AMERICA DIGITAL LLC",
+        detect=lambda t: bio_andes.FINGERPRINT in t,
+        parser=bio_andes.parse,
+        nota="Extranjero sin RUT chileno ni IVA en el documento: va como factura de compra DTE 46.",
+    ),
+    # Plantillas conocidas cuyo emisor todavia no tiene config propia: se parsean
+    # igual, pero quedan marcadas para que se les agregue una entrada arriba.
     ProviderConfig(
         key="stripe_desconocido",
         display_name=None,
         detect=stripe_invoice.looks_like_stripe,
         parser=stripe_invoice.parse,
         nota="Factura Stripe de proveedor sin config dedicada: verificar y agregar al registry.",
+        revisar=True,
+    ),
+    ProviderConfig(
+        key="dte_desconocido",
+        display_name=None,
+        detect=dte_nacional.looks_like_dte,
+        parser=dte_nacional.parse,
+        nota="DTE nacional de proveedor sin config dedicada: verificar y agregar al registry.",
+        revisar=True,
     ),
 ]
 
@@ -87,7 +112,7 @@ def parse_invoice(text: str, sender_name: str = "", sender_domain: str = "") -> 
         inv = cfg.parser(text)
         inv.provider_key = cfg.key
         inv.proveedor = cfg.display_name or inv.proveedor or sender_name or sender_domain or "Desconocido"
-        if cfg.key == "stripe_desconocido":
+        if cfg.revisar:
             inv.revision_manual = True
         if cfg.nota:
             _add_nota(inv, cfg.nota)

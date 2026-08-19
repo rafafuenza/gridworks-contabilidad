@@ -1,7 +1,7 @@
 import re
 from dateutil import parser as dateparser
 
-from app.parsers.base import ParsedInvoice
+from app.parsers.base import ParsedInvoice, parse_monto
 
 
 def parse(text: str, sender_name: str = "", sender_domain: str = "") -> ParsedInvoice:
@@ -36,12 +36,11 @@ def parse(text: str, sender_name: str = "", sender_domain: str = "") -> ParsedIn
     if m:
         result.numero = m.group(1)
 
-    # total: ultima ocurrencia de "Total" seguida de un monto en la misma linea
+    # total: ultima ocurrencia de "Total" seguida de un monto en la misma linea.
+    # La conversion va por parse_monto y no a mano: la version anterior asumia
+    # convencion chilena en cuanto veia una coma, y leia "$6,800.00" como 6.8.
     totals = re.findall(r"Total\D{0,15}?([\d.,]+\d)", text)
     if totals:
-        try:
-            result.total = float(totals[-1].replace(".", "").replace(",", ".")) if "," in totals[-1] else float(totals[-1].replace(",", ""))
-        except ValueError:
-            pass
+        result.total = parse_monto(totals[-1])
 
     return result

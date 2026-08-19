@@ -31,6 +31,15 @@ SEED = [
     dict(clave="nic-chile", nombre="NIC Chile", rut="60.910.000-1", pais="CL",
          moneda_default="CLP", tratamiento="exento", en_nomina_iva_digital=False,
          fuente_rut="RUT en el propio DTE"),
+    dict(clave="praxedis", nombre="PRAXEDIS SPA", rut="76.188.742-4", pais="CL",
+         moneda_default="CLP", tratamiento="afecto", en_nomina_iva_digital=False,
+         fuente_rut="RUT en el propio DTE",
+         notas="Modulacion de stand en Expo America Digital 2026. IVA 19% recuperable."),
+    dict(clave="bio-andes", nombre="BIO ANDES AMERICA DIGITAL LLC", rut=RUT_GENERICO_EXTRANJERO,
+         pais="US", moneda_default="USD", tratamiento="afecto", en_nomina_iva_digital=False,
+         fuente_rut="Confirmado con el usuario (ago-2026): no tiene RUT chileno",
+         notas="LLC de Delaware (EIN 38-4191606), factura el Congreso America Digital "
+               "sin IVA chileno. Sin RUT chileno: va como factura de compra DTE 46."),
 ]
 
 

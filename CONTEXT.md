@@ -96,7 +96,23 @@ leyendo el codigo, para que nadie las "arregle" sin saber por que estan asi:
   traen el RUT hardcodeado; lo aporta el mantenedor cruzando por `provider_key`.
   Se siembra solo (`ensure_seed`) con: anthropic (59.250.690-4), aws
   (59.292.930-9, verificado en nomina), railway y hetzner (55.555.555-5 generico,
-  verificado que NO estan en la nomina), nic-chile (60.910.000-1, exento).
+  verificado que NO estan en la nomina), nic-chile (60.910.000-1, exento),
+  praxedis (76.188.742-4, afecto, RUT del propio DTE) y bio-andes
+  (55.555.555-5 generico; confirmado ago-2026 que no tiene RUT chileno).
+- **`ensure_seed` solo inserta, nunca actualiza.** Si se corrige el RUT o el
+  tratamiento de una fila del `SEED` que ya existe en la base, el cambio **no**
+  llega: hay que editar la fila a mano (o borrarla y volver a sembrar) y despues
+  correr `reparse`. En una base nueva no se nota, por eso es facil creer que el
+  seed es la fuente de verdad en runtime -- no lo es, la tabla lo es.
+- **El RUT generico en el seed significa "ya lo averiguamos y no tiene".** No es
+  un placeholder: railway, hetzner y bio-andes lo tienen porque se verifico que
+  no estan en la nomina IVA digital, y va acompañado del `fuente_rut` que dice
+  quien y cuando lo confirmo. Para el caso contrario -- proveedor que aparecio y
+  todavia nadie lo miro -- lo correcto es dejar la fila con `rut=None`: `aplicar`
+  le pone el generico igual pero **marca la factura `falta_proveedor`** (etiqueta
+  naranja en la UI), que es justo la distincion entre "sin RUT" y "sin revisar".
+  Escribir el generico a mano en una fila sin verificar apaga esa alarma y la
+  factura pasa a verse resuelta sin estarlo.
 - **Enriquecimiento manual (lo hace el asistente, no un cron):** si aparece un
   proveedor que no esta en el mantenedor, la factura entra igual con RUT generico
   y queda marcada `falta_proveedor`. El enriquecimiento (buscar el RUT en la
@@ -139,11 +155,34 @@ Detalles del sync:
   - `stripe_invoice.py`: parser **compartido** para la plantilla de Stripe, que
     usan Anthropic, Railway y a futuro la mayoria de los SaaS. Maneja la variante
     con IVA (Anthropic) y sin IVA (Railway).
+  - `dte_nacional.py`: parser **compartido** para la factura electronica chilena.
+    Es el analogo nacional del de Stripe: el formato lo fija el SII, asi que un
+    proveedor chileno nuevo normalmente se resuelve con una entrada en
+    `PROVIDERS` que reusa este parser, sin escribir codigo. Ojo con dos cosas del
+    texto que saca pdfplumber: el digito verificador viene separado del cuerpo
+    del RUT (`76.188.742- 4`) y la copia CEDIBLE **duplica todo el documento**,
+    por eso las regex usan `search` y nunca `findall`. El emisor se toma del
+    primer `R.U.T.` del documento (el segundo es el receptor, o sea GridWorks).
   - Parsers dedicados de formato propio: `aws.py`, `hetzner.py`, `nic.py`
-    (NIC Chile es DTE nacional exento, en CLP, con RUT en el documento).
+    (NIC Chile es DTE nacional exento, en CLP, con RUT en el documento) y
+    `bio_andes.py` (LLC de Delaware que cobra el Congreso America Digital).
   - `generic.py` sigue como fallback best-effort (marca `revision_manual=True`).
   - Agregar un proveedor nuevo = una entrada en `PROVIDERS` (si es Stripe, reusa
-    `stripe_invoice.parse`).
+    `stripe_invoice.parse`; si es DTE chileno, `dte_nacional.parse`). El flag
+    `revisar=True` de `ProviderConfig` es para las plantillas compartidas sin
+    emisor identificado (`stripe_desconocido`, `dte_desconocido`): parsean igual
+    pero quedan marcadas para que se les agregue su entrada.
+  - **Diagnosticar un PDF nuevo**: `python -m app.tasks.diagnosticar <carpeta>`
+    dice que proveedor detecta el registry, que extrae el parser, y deja el texto
+    crudo en un `.txt` al lado de cada PDF. Ese `.txt` es tambien la fixture que
+    se copia a `tests/fixtures/` para dejar el caso cubierto. La carpeta
+    `facturas_pendientes/` esta gitignoreada para dejar PDFs reales ahi.
+  - **Montos: usar siempre `base.parse_monto`**, nunca `float(...replace(...))`.
+    El punto y la coma estan invertidos entre la convencion chilena y la
+    anglosajona, y no se puede decidir por la moneda: el PDF de BIO ANDES esta en
+    USD y trae las dos en el mismo documento. `parse_monto` decide por estructura
+    (manda el separador de mas a la derecha). El `generic.py` viejo asumia
+    convencion chilena en cuanto veia una coma y leia `$6,800.00` como **6.8**.
   - Hay una **capa de validacion** en el registry: si falta numero/total o si
     `afecto+exento+iva` no cuadra con `total`, marca `revision_manual`.
   - **Re-parseo del historico**: `python -m app.tasks.reparse` re-aplica los
@@ -198,10 +237,18 @@ Detalles del sync:
 2. Verificar el RUT de AWS en la nomina IVA digital del SII y el tratamiento
    del IVA que cobra (con el contador). Agregar parsers dedicados a nuevos
    proveedores frecuentes que vayan apareciendo (una entrada en `PROVIDERS`).
+2b. BIO ANDES AMERICA DIGITAL LLC quedo **resuelto**: no tiene RUT chileno
+   (confirmado ago-2026), asi que va con el generico y como factura de compra
+   DTE 46, igual que railway y hetzner. Queda solo confirmar con el contador el
+   tratamiento del monto (se asumio afecto, mismo criterio que los otros
+   extranjeros).
 3. UI para editar a mano una fila del "queue de revision" (hoy solo se corrige
    re-parseando). Backfill opcional de `tipo_cambio_fecha` en las facturas que
    reusaron TC del primer sync (cuesta llamadas a la API).
-4. Tests de regresion usando los 102 PDFs reales como fixtures.
+4. Tests de regresion con PDFs reales: **empezado** en `tests/test_parsers.py`,
+   con fixtures de texto en `tests/fixtures/` (PRAXEDIS y BIO ANDES). Falta
+   sumar los formatos ya cubiertos por parser pero sin fixture: Anthropic/Stripe,
+   AWS, Hetzner y NIC. Se sacan con `diagnosticar` (ver arriba).
 5. Dashboard: los tiles de totales hoy suman montos mezclando USD+CLP; conviene
    mostrarlos convertidos a CLP como en el Excel.
 6. Libro de Ventas (mismo patron: modelo `Sale`, sync propio si aplica,
