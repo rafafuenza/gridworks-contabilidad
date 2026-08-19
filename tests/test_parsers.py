@@ -130,3 +130,35 @@ def test_bio_andes_queda_resuelto_con_el_rut_generico(db):
 
     assert inv.rut_proveedor == mantenedor.RUT_GENERICO_EXTRANJERO
     assert inv.falta_proveedor is False
+
+
+# --- Formato de montos en la web -----------------------------------------
+
+@pytest.mark.parametrize("valor, moneda, esperado", [
+    (2273680.0, "CLP", "2.273.680"),
+    (431999.0, "CLP", "431.999"),
+    (2705679.0, "CLP", "2.705.679"),
+    (999.0, "CLP", "999"),
+    (6800.0, "USD", "6,800.00"),
+    (6.8, "USD", "6.80"),
+    (1234567.89, "USD", "1,234,567.89"),
+])
+def test_formato_monto_por_moneda(valor, moneda, esperado):
+    from app.main import formato_monto
+    assert formato_monto(valor, moneda) == esperado
+
+
+def test_los_pesos_no_muestran_decimales():
+    """El SII declara pesos enteros: mostrar centavos sugiere una precision que
+    el documento no tiene."""
+    from app.main import formato_monto
+    assert formato_monto(2273680.4, "CLP") == "2.273.680"
+    assert "," not in formato_monto(2273680.0, "CLP")  # la coma no es separador de miles en CLP
+
+
+def test_formato_monto_sin_valor_ni_moneda():
+    from app.main import formato_monto
+    assert formato_monto(None) == "-"
+    assert formato_monto(None, "CLP") == "-"
+    # Sin moneda (totales del tablero) se usa la forma sin decimales
+    assert formato_monto(2273680.0) == "2.273.680"

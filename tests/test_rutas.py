@@ -724,9 +724,10 @@ def _reparse_limpio():
 
 
 def test_reparse_deja_el_estado_terminado_y_el_resumen(monkeypatch):
-    def falso_reparse(progress=None):
+    def falso_reparse(progress=None, solo_pendientes=True):
         stats = {"total": 104, "procesados": 104, "revision_manual": 0,
-                 "falta_proveedor": 1, "sin_pdf": 0, "errores": 0, "tc_consultados": 2}
+                 "falta_proveedor": 1, "sin_pdf": 0, "errores": 0, "tc_consultados": 2,
+                 "omitidas_declaradas": 2}
         if progress is not None:
             progress.update(stats)
         return stats
@@ -737,14 +738,33 @@ def test_reparse_deja_el_estado_terminado_y_el_resumen(monkeypatch):
     assert main._reparse_state["running"] is False
     assert main._reparse_state["terminado"] is True
     assert main._reparse_state["total"] == 104
-    assert "Total 104" in main._reparse_state["mensaje"]
+    assert "Pendientes re-parseadas 104" in main._reparse_state["mensaje"]
     assert "falta proveedor 1" in main._reparse_state["mensaje"]
+    # Lo omitido se dice: callarlo haria leer el resumen como cobertura total
+    assert "2 ya declaradas" in main._reparse_state["mensaje"]
+
+
+def test_el_boton_nunca_pide_re_parsear_las_declaradas(monkeypatch):
+    """El default de reparse_all ya es solo_pendientes=True, pero el boton no
+    debe depender de eso: si alguien cambia el default por consola, la web
+    seguiria sin tocar lo ya declarado."""
+    recibido = {}
+
+    def falso_reparse(progress=None, solo_pendientes=True):
+        recibido["solo_pendientes"] = solo_pendientes
+        return {"total": 0, "procesados": 0, "revision_manual": 0, "falta_proveedor": 0,
+                "sin_pdf": 0, "errores": 0, "tc_consultados": 0, "omitidas_declaradas": 0}
+
+    monkeypatch.setattr("app.tasks.reparse.reparse_all", falso_reparse)
+    main._run_reparse_bg()
+
+    assert recibido["solo_pendientes"] is True
 
 
 def test_si_reparse_revienta_el_estado_no_queda_colgado(monkeypatch):
     """Sin el finally, running se quedaria en True para siempre y el boton
     nunca volveria a habilitarse en ninguna sesion."""
-    def reventar(progress=None):
+    def reventar(progress=None, solo_pendientes=True):
         raise RuntimeError("base caida")
 
     monkeypatch.setattr("app.tasks.reparse.reparse_all", reventar)
@@ -765,3 +785,66 @@ def test_no_se_puede_lanzar_un_reparse_sobre_otro_en_curso(client, usuario):
 
     assert resp.status_code == 200
     assert resp.json() == {"running": True, "ya_en_curso": True}
+
+
+def _sembrar_estados(db):
+    """Tres facturas sin PDF: una pendiente, una declarada y una con estado NULL.
+    Sin pdf_data el reparse las cuenta y las salta, que es suficiente para
+    verificar A CUALES eligio, sin necesitar PDFs de verdad.
+
+    El estado NULL se fuerza por SQL a proposito: asignar estado=None en el
+    modelo no sirve, porque SQLAlchemy no distingue "None explicito" de "sin
+    asignar" y le aplica igual el default 'pendiente' de la columna."""
+    from sqlalchemy import text as sql
+
+    from app.models import Purchase
+
+    db.add_all([
+        Purchase(gmail_message_id="m-pendiente", estado="pendiente"),
+        Purchase(gmail_message_id="m-declarada", estado="aceptada"),
+        Purchase(gmail_message_id="m-sin-estado", estado="pendiente"),
+    ])
+    db.commit()
+    db.execute(sql("update purchases set estado = NULL where gmail_message_id = 'm-sin-estado'"))
+    db.commit()
+
+
+def _reparse_contra(db, monkeypatch, **kwargs):
+    from app.tasks import reparse as mod
+
+    monkeypatch.setattr(mod, "SessionLocal", lambda: db)
+    monkeypatch.setattr(mod, "init_db", lambda: None)
+    monkeypatch.setattr(mod.mantenedor, "ensure_seed", lambda s: None)
+    return mod.reparse_all(**kwargs)
+
+
+def test_reparse_deja_fuera_las_ya_declaradas(db, monkeypatch):
+    """Una factura aceptada ya se declaro al SII con los montos que tenia:
+    recalcularselos dejaria la base y la declaracion presentada diciendo cosas
+    distintas."""
+    _sembrar_estados(db)
+
+    stats = _reparse_contra(db, monkeypatch)
+
+    assert stats["total"] == 2                  # la pendiente y la de estado NULL
+    assert stats["omitidas_declaradas"] == 1
+
+
+def test_reparse_no_se_salta_las_pendientes_con_estado_nulo(db, monkeypatch):
+    """`estado != 'aceptada'` a secas las dejaria fuera, porque en SQL
+    NULL != 'aceptada' no es verdadero sino NULL."""
+    _sembrar_estados(db)
+
+    stats = _reparse_contra(db, monkeypatch)
+
+    assert stats["total"] == 2
+
+
+def test_reparse_con_todas_incluye_las_declaradas(db, monkeypatch):
+    """La valvula de escape para rectificar una ya declarada, solo por consola."""
+    _sembrar_estados(db)
+
+    stats = _reparse_contra(db, monkeypatch, solo_pendientes=False)
+
+    assert stats["total"] == 3
+    assert stats["omitidas_declaradas"] == 0

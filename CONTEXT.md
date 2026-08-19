@@ -187,8 +187,8 @@ Detalles del sync:
     `afecto+exento+iva` no cuadra con `total`, marca `revision_manual`.
   - **Re-parseo del historico**: re-aplica los parsers sobre los PDFs ya
     guardados en la base (util al agregar parsers nuevos o corregir bugs), sin
-    volver a Gmail. Hay dos caminos: el boton **Re-parsear** en la web y
-    `python -m app.tasks.reparse` por consola. **Es un paso obligatorio**: un
+    volver a Gmail. Hay dos caminos: el boton **Re-parsear pendientes** en la web
+    y `python -m app.tasks.reparse` por consola. **Es un paso obligatorio**: un
     deploy con un parser nuevo no toca las facturas que ya estan en la base, asi
     que la pagina se sigue viendo igual hasta que se re-parsea.
     `railway run python -m app.tasks.reparse` **no** funciona desde una maquina
@@ -196,6 +196,21 @@ Detalles del sync:
     `DATABASE_URL` de produccion apunta a `postgres.railway.internal`, que solo
     resuelve dentro de Railway. Por eso existe el boton (que corre dentro del
     contenedor); la alternativa por consola es `railway ssh`.
+  - **El reparse solo toca las pendientes** (`solo_pendientes=True`, el default,
+    y el boton lo pasa explicito). Una factura aceptada ya se declaro al SII con
+    los montos que tenia: recalcularselos por detras dejaria la base y la
+    declaracion presentada diciendo cosas distintas, sin rastro. Antes se
+    re-parseaba todo preservando `estado`, que respeta la marca pero no las
+    cifras, que es lo que en realidad hay que congelar. La valvula de escape para
+    rectificar es `--todas`, y es explicita a proposito. Ojo con el filtro: va
+    `estado IS NULL OR estado != 'aceptada'`, porque en SQL `NULL != 'aceptada'`
+    no es verdadero sino NULL, y una pendiente antigua sin estado se saltaria en
+    silencio. Lo omitido se informa en el resumen, no se calla.
+- **Formato de montos**: el filtro Jinja `monto` (`app/main.py`) formatea segun
+  la moneda de la fila -- pesos sin decimales y con separador de miles
+  (`2.273.680`), dolares con dos decimales (`6,800.00`). El peso chileno no tiene
+  centavos, asi que mostrarlos sugiere una precision que el documento no tiene.
+  El Excel hace lo mismo eligiendo el `number_format` por fila segun `es_usd`.
 - **AWS cobra 19% (IVA chileno)** en su factura. Queda con RUT generico
   extranjero y una nota: falta verificar su RUT en la nomina IVA digital del SII
   y confirmar con el contador si ese IVA es recuperable (en B2B el tratamiento

@@ -69,10 +69,13 @@ def build_workbook(purchases: Sequence[Purchase], periodo_label: str) -> bytes:
         ws.cell(row=r, column=5, value=descripcion)
         ws.cell(row=r, column=6, value=p.moneda)
 
-        # Montos en moneda original (G,H,I,J)
+        # Montos en moneda original (G,H,I,J). El formato depende de la moneda de
+        # la fila: los dolares llevan sus dos decimales, pero una factura en pesos
+        # no tiene centavos y "2.273.680,00" sugiere una precision inexistente.
+        fmt_fila = FMT_ORIG if es_usd else FMT_CLP
         for col, val in ((7, p.monto_afecto), (8, p.monto_exento), (9, p.iva), (10, p.total)):
             c = ws.cell(row=r, column=col, value=float(val) if val is not None else None)
-            c.number_format = FMT_ORIG
+            c.number_format = fmt_fila
 
         # Columnas en CLP como formula (N exento, O iva, P total; M afecto derivado)
         if es_usd and tc:

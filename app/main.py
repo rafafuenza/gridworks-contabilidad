@@ -55,6 +55,29 @@ app = FastAPI(title="GridWorks Contabilidad", docs_url=None, redoc_url=None, ope
 templates = Jinja2Templates(directory="app/templates")
 
 
+def formato_monto(valor, moneda: str = None) -> str:
+    """Formatea un monto en la convencion de su moneda.
+
+    El peso chileno no tiene decimales -- el SII declara pesos enteros -- asi
+    que mostrar "2273680.00" no solo se lee mal: sugiere una precision que el
+    documento no tiene. Va con separador de miles de punto, como se escribe en
+    Chile. El dolar mantiene sus dos decimales y usa la convencion anglosajona
+    (coma de miles, punto decimal), que es como viene impreso en las facturas.
+
+    Sin moneda (los totales del tablero, que hoy suman monedas mezcladas) se
+    usa la forma sin decimales, que es la de la moneda dominante del libro.
+    """
+    if valor is None:
+        return "-"
+    v = float(valor)
+    if (moneda or "").upper() == "USD":
+        return f"{v:,.2f}"
+    return f"{round(v):,}".replace(",", ".")
+
+
+templates.env.filters["monto"] = formato_monto
+
+
 @app.on_event("startup")
 def on_startup():
     init_db()
@@ -444,19 +467,31 @@ def sync_estado(request: Request, usuario: Usuario = Depends(require_login)):
 # dentro del contenedor, que es donde si resuelve.
 _reparse_state = {"running": False, "terminado": False, "total": 0, "procesados": 0,
                   "revision_manual": 0, "falta_proveedor": 0, "sin_pdf": 0, "errores": 0,
-                  "tc_consultados": 0, "mensaje": ""}
+                  "tc_consultados": 0, "omitidas_declaradas": 0, "mensaje": ""}
 _reparse_lock = threading.Lock()
 
 
 def _run_reparse_bg():
+    # El boton nunca toca las ya declaradas: se re-parsean solo las pendientes.
+    # Para incluir una declarada hay que rectificar a conciencia por consola
+    # (`python -m app.tasks.reparse --todas`).
     from app.tasks.reparse import reparse_all
 
     try:
-        stats = reparse_all(progress=_reparse_state)
+        # solo_pendientes va explicito aunque ya sea el default: desde la web no
+        # hay forma de rectificar una declarada, y no debe quedar a merced de
+        # que alguien cambie el default pensando en el uso por consola.
+        stats = reparse_all(progress=_reparse_state, solo_pendientes=True)
+        # .get y no [] porque este mensaje es el unico canal de vuelta del hilo:
+        # una clave que falte debe costar una linea incompleta, no convertir un
+        # reparse que si termino en un "Error al re-parsear" que no ocurrio.
+        omitidas = stats.get("omitidas_declaradas", 0)
         _reparse_state["mensaje"] = (
-            f"Listo. Total {stats['total']}, en revision {stats['revision_manual']}, "
+            f"Listo. Pendientes re-parseadas {stats['total']}, "
+            f"en revision {stats['revision_manual']}, "
             f"falta proveedor {stats['falta_proveedor']}, sin pdf {stats['sin_pdf']}, "
             f"errores {stats['errores']}."
+            + (f" Se dejaron intactas {omitidas} ya declaradas." if omitidas else "")
         )
     except Exception as e:
         _reparse_state["mensaje"] = f"Error al re-parsear: {e}"
@@ -472,8 +507,8 @@ def trigger_reparse(request: Request, usuario: Usuario = Depends(require_login))
             return JSONResponse({"running": True, "ya_en_curso": True})
         _reparse_state.update({"running": True, "terminado": False, "total": 0, "procesados": 0,
                                "revision_manual": 0, "falta_proveedor": 0, "sin_pdf": 0,
-                               "errores": 0, "tc_consultados": 0,
-                               "mensaje": "Leyendo los PDF guardados..."})
+                               "errores": 0, "tc_consultados": 0, "omitidas_declaradas": 0,
+                               "mensaje": "Leyendo los PDF de las pendientes..."})
     threading.Thread(target=_run_reparse_bg, daemon=True).start()
     return JSONResponse({"running": True})
 

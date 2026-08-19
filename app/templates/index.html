@@ -53,8 +53,8 @@
 
   <div class="flex gap-2">
     <button id="btn-sync" type="button" class="bg-gray-900 text-white rounded px-4 py-2 text-sm">Actualizar ahora</button>
-    <button id="btn-reparse" type="button" title="Vuelve a leer los PDF ya guardados y recalcula los datos. No consulta Gmail."
-            class="bg-amber-600 text-white rounded px-4 py-2 text-sm">Re-parsear</button>
+    <button id="btn-reparse" type="button" title="Vuelve a leer los PDF de las facturas pendientes y recalcula sus datos. No consulta Gmail y no toca las ya declaradas."
+            class="bg-amber-600 text-white rounded px-4 py-2 text-sm">Re-parsear pendientes</button>
     <button id="btn-aceptar" type="button" data-mes="{{ mes_seleccionado or '' }}"
             class="bg-blue-700 text-white rounded px-4 py-2 text-sm">Aceptar {{ mes_seleccionado or 'todo' }}</button>
     <a href="/export.xlsx?mes={{ mes_seleccionado or '' }}"
@@ -71,15 +71,15 @@
   </div>
   <div class="bg-white rounded-lg shadow p-4">
     <p class="text-xs text-gray-500">Afecto</p>
-    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.afecto) }}</p>
+    <p class="text-2xl font-semibold">{{ totales.afecto|monto }}</p>
   </div>
   <div class="bg-white rounded-lg shadow p-4">
     <p class="text-xs text-gray-500">IVA</p>
-    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.iva) }}</p>
+    <p class="text-2xl font-semibold">{{ totales.iva|monto }}</p>
   </div>
   <div class="bg-white rounded-lg shadow p-4">
     <p class="text-xs text-gray-500">Total</p>
-    <p class="text-2xl font-semibold">{{ "%.2f"|format(totales.total) }}</p>
+    <p class="text-2xl font-semibold">{{ totales.total|monto }}</p>
   </div>
 </div>
 
@@ -116,9 +116,9 @@
           {% endif %}
         </td>
         <td class="px-3 py-2">{{ p.moneda or "-" }}</td>
-        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.monto_afecto) if p.monto_afecto is not none else "-" }}</td>
-        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.iva) if p.iva is not none else "-" }}</td>
-        <td class="px-3 py-2 text-right">{{ "%.2f"|format(p.total) if p.total is not none else "-" }}</td>
+        <td class="px-3 py-2 text-right">{{ p.monto_afecto|monto(p.moneda) }}</td>
+        <td class="px-3 py-2 text-right">{{ p.iva|monto(p.moneda) }}</td>
+        <td class="px-3 py-2 text-right">{{ p.total|monto(p.moneda) }}</td>
         <td class="px-3 py-2">
           {% if p.estado == "aceptada" %}
             <span class="text-[10px] uppercase tracking-wide text-green-700 bg-green-200 rounded px-1 py-0.5">declarada</span>
@@ -251,21 +251,22 @@
   const reparse = progresoLive({
     panel: 'reparse-panel', bar: 'reparse-bar', label: 'reparse-label', count: 'reparse-count',
     detail: 'reparse-detail', estadoUrl: '/reparse/estado',
-    tituloActivo: 'Re-leyendo los PDF guardados…', tituloFin: 'Re-parseo completo',
-    mensajeInicial: 'Leyendo los PDF guardados…',
+    tituloActivo: 'Re-leyendo los PDF pendientes…', tituloFin: 'Re-parseo completo',
+    mensajeInicial: 'Leyendo los PDF de las pendientes…',
     detalle: [['revision_manual', 'en revision'], ['falta_proveedor', 'sin proveedor'],
-              ['sin_pdf', 'sin pdf'], ['errores', 'errores']]
+              ['sin_pdf', 'sin pdf'], ['errores', 'errores'],
+              ['omitidas_declaradas', 'ya declaradas, intactas']]
   });
   const btnReparse = el('btn-reparse');
   if (btnReparse) {
     btnReparse.addEventListener('click', function () {
-      if (!confirm('Volver a leer todos los PDF guardados y recalcular sus datos?\n\nNo consulta Gmail y no cambia el estado de las ya declaradas.')) return;
+      if (!confirm('Volver a leer los PDF de las facturas PENDIENTES y recalcular sus datos?\n\nNo consulta Gmail. Las ya declaradas al SII no se tocan.')) return;
       btnReparse.disabled = true; btnReparse.textContent = 'Re-parseando…';
       fetch('/reparse', { method: 'POST' }).then(function (r) {
         if (sesionVencida(r)) { location.href = '/login'; return; }
         return r.json();
       }).then(function (s) { if (s) reparse.start(); })
-        .catch(function () { btnReparse.disabled = false; btnReparse.textContent = 'Re-parsear'; });
+        .catch(function () { btnReparse.disabled = false; btnReparse.textContent = 'Re-parsear pendientes'; });
     });
   }
 
